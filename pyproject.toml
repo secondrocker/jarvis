@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-demo"
+version = "0.1.0"
+description = "A FastAPI, LangGraph, and Deep Agents demonstration service."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "deepagents",
+    "fastapi",
+    "langchain",
+    "langchain-openai",
+    "langgraph",
+    "pydantic-settings",
+    "sse-starlette",
+    "structlog",
+    "uvicorn[standard]",
+]
+
+[dependency-groups]
+dev = [
+    "httpx",
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_app"]
+artifacts = [
+    "src/agent_app/skills/**/*.md",
+    "src/agent_app/skills/**/references/*",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/agent_app/skills/**/*.md",
+    "/src/agent_app/skills/**/references/*",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
