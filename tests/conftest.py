@@ -1,7 +1,6 @@
 """Shared pytest fixtures that do not depend on application configuration."""
 
 import pytest
-
 from fakes import FakeSummaryModel
 
 
