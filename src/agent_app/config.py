@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     openai_api_key: SecretStr
     openai_model: str = Field(min_length=1)
+    openai_base_url: str | None = None
     llm_timeout_seconds: float = Field(default=60.0, gt=0)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     task_timeout_seconds: float = Field(default=300.0, gt=0)
