@@ -68,19 +68,35 @@ class FakeTaskService:
         self.stream_calls.append(request)
         if self._fail_with is not None:
             raise self._fail_with
-        yield self._TaskEvent(
-            type=self._EventType.TASK_COMPLETED,
-            task_id="fake-task",
-            thread_id=request.thread_id or "fake-thread",
-            sequence=1,
-            timestamp=datetime.now(UTC),
-            data={
+        seq = 0
+        for etype in (
+            self._EventType.TASK_STARTED,
+            self._EventType.ROUTE_SELECTED,
+            self._EventType.NODE_STARTED,
+            self._EventType.NODE_COMPLETED,
+            self._EventType.TASK_COMPLETED,
+        ):
+            seq += 1
+            data = {"message": "fake"} if etype == self._EventType.TASK_STARTED else {
                 "selected_mode": "workflow",
                 "task_type": request.task_type,
-                "route_reason": "explicit workflow",
-                "result": {"summary": "fake", "key_points": []},
-            },
-        )
+            }
+            if etype == self._EventType.TASK_COMPLETED:
+                data = {
+                    "selected_mode": "workflow",
+                    "task_type": request.task_type,
+                    "route_reason": "explicit workflow",
+                    "result": {"summary": "fake", "key_points": []},
+                }
+            yield self._TaskEvent(
+                type=etype,
+                task_id="fake-task",
+                thread_id=request.thread_id or "fake-thread",
+                sequence=seq,
+                timestamp=datetime.now(UTC),
+                data=data,
+            )
+
 
     async def invoke(self, request: Any) -> Any:
         self.invoke_calls.append(request)
