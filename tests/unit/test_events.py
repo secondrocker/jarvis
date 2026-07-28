@@ -47,7 +47,7 @@ def test_task_event_rejects_non_positive_sequences() -> None:
             task_id="task-1",
             thread_id="thread-1",
             sequence=0,
-            timestamp=EventSequencer("task-1", "thread-1").next(
-                EventType.TASK_STARTED, {}
-            ).timestamp,
+            timestamp=EventSequencer("task-1", "thread-1")
+            .next(EventType.TASK_STARTED, {})
+            .timestamp,
         )

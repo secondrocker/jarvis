@@ -58,11 +58,14 @@ def make_route_node(
             parameters=state.get("parameters", {}),
         )
         decision = await router.route(request)
-        _emit(EventType.ROUTE_SELECTED, {
-            "selected_mode": decision.selected_mode.value,
-            "task_type": decision.task_type,
-            "reason": decision.reason,
-        })
+        _emit(
+            EventType.ROUTE_SELECTED,
+            {
+                "selected_mode": decision.selected_mode.value,
+                "task_type": decision.task_type,
+                "reason": decision.reason,
+            },
+        )
         return {
             "selected_mode": decision.selected_mode.value,
             "selected_task_type": decision.task_type,
@@ -89,7 +92,9 @@ def make_workflow_node(
         except Exception as error:
             return {"error": {"code": ErrorCode.EXECUTION_FAILED.value, "message": str(error)}}
         _emit(EventType.NODE_COMPLETED, {"node": f"workflow.{task_type}"})
-        return {"result": result}
+        # Extract the structured result from the subgraph's full state.
+        clean_result = result.get("result", result) if isinstance(result, dict) else {}
+        return {"result": clean_result}
 
     return run_workflow
 

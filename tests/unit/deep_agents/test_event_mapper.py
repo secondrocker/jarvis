@@ -19,7 +19,10 @@ def test_ai_message_chunk_with_tool_calls_maps_to_tool_started() -> None:
 
 def test_tool_message_maps_to_tool_completed_success() -> None:
     message = ToolMessage(
-        content="done", name="write_todos", tool_call_id="tc-1", status="success",
+        content="done",
+        name="write_todos",
+        tool_call_id="tc-1",
+        status="success",
     )
     event = map_deep_agent_event(message)
     assert event is not None
@@ -30,7 +33,9 @@ def test_tool_message_maps_to_tool_completed_success() -> None:
 def test_failed_tool_message_maps_to_tool_completed_error() -> None:
     message = ToolMessage(
         content="error: something went wrong",
-        name="write_file", tool_call_id="tc-2", status="error",
+        name="write_file",
+        tool_call_id="tc-2",
+        status="error",
     )
     event = map_deep_agent_event(message)
     assert event is not None

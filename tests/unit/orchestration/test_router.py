@@ -51,14 +51,17 @@ def _registry():
 
 # ---- Explicit mode tests ----
 
+
 @pytest.mark.asyncio
 async def test_explicit_workflow_requires_registered_task_type() -> None:
     from agent_app.orchestration.schemas import LLMRouteDecision
 
     model = _FakeRouterModel(
         LLMRouteDecision(
-            selected_mode=SelectedMode.WORKFLOW, task_type="summary",
-            is_ambiguous=False, reason="test",
+            selected_mode=SelectedMode.WORKFLOW,
+            task_type="summary",
+            is_ambiguous=False,
+            reason="test",
         )
     )
     router = TaskRouter(registry=_registry(), model=model)
@@ -80,8 +83,10 @@ async def test_explicit_workflow_with_registered_task_type_no_llm() -> None:
 
     model = _FakeRouterModel(
         LLMRouteDecision(
-            selected_mode=SelectedMode.WORKFLOW, task_type="summary",
-            is_ambiguous=False, reason="test",
+            selected_mode=SelectedMode.WORKFLOW,
+            task_type="summary",
+            is_ambiguous=False,
+            reason="test",
         )
     )
     router = TaskRouter(registry=_registry(), model=model)
@@ -99,8 +104,10 @@ async def test_explicit_deep_agent_ignores_task_type_no_llm() -> None:
 
     model = _FakeRouterModel(
         LLMRouteDecision(
-            selected_mode=SelectedMode.DEEP_AGENT, task_type=None,
-            is_ambiguous=False, reason="test",
+            selected_mode=SelectedMode.DEEP_AGENT,
+            task_type=None,
+            is_ambiguous=False,
+            reason="test",
         )
     )
     router = TaskRouter(registry=_registry(), model=model)
@@ -114,14 +121,17 @@ async def test_explicit_deep_agent_ignores_task_type_no_llm() -> None:
 
 # ---- Registry + deterministic rule tests ----
 
+
 @pytest.mark.asyncio
 async def test_registered_task_type_wins_without_llm() -> None:
     from agent_app.orchestration.schemas import LLMRouteDecision
 
     model = _FakeRouterModel(
         LLMRouteDecision(
-            selected_mode=SelectedMode.DEEP_AGENT, task_type=None,
-            is_ambiguous=True, reason="should not be called",
+            selected_mode=SelectedMode.DEEP_AGENT,
+            task_type=None,
+            is_ambiguous=True,
+            reason="should not be called",
         )
     )
     router = TaskRouter(registry=_registry(), model=model)
@@ -138,8 +148,10 @@ async def test_deterministic_summary_phrases_route_without_llm(phrase) -> None:
 
     model = _FakeRouterModel(
         LLMRouteDecision(
-            selected_mode=SelectedMode.DEEP_AGENT, task_type=None,
-            is_ambiguous=True, reason="should not be called",
+            selected_mode=SelectedMode.DEEP_AGENT,
+            task_type=None,
+            is_ambiguous=True,
+            reason="should not be called",
         )
     )
     router = TaskRouter(registry=_registry(), model=model)
@@ -155,8 +167,10 @@ async def test_broad_word_does_not_trigger_deterministic_rule() -> None:
 
     model = _FakeRouterModel(
         LLMRouteDecision(
-            selected_mode=SelectedMode.DEEP_AGENT, task_type=None,
-            is_ambiguous=False, reason="open-ended analysis request",
+            selected_mode=SelectedMode.DEEP_AGENT,
+            task_type=None,
+            is_ambiguous=False,
+            reason="open-ended analysis request",
         )
     )
     router = TaskRouter(registry=_registry(), model=model)
@@ -167,14 +181,17 @@ async def test_broad_word_does_not_trigger_deterministic_rule() -> None:
 
 # ---- LLM fallback tests ----
 
+
 @pytest.mark.asyncio
 async def test_llm_selects_workflow_with_registered_type() -> None:
     from agent_app.orchestration.schemas import LLMRouteDecision
 
     model = _FakeRouterModel(
         LLMRouteDecision(
-            selected_mode=SelectedMode.WORKFLOW, task_type="summary",
-            is_ambiguous=False, reason="clear summary intent",
+            selected_mode=SelectedMode.WORKFLOW,
+            task_type="summary",
+            is_ambiguous=False,
+            reason="clear summary intent",
         )
     )
     router = TaskRouter(registry=_registry(), model=model)
@@ -191,8 +208,10 @@ async def test_llm_selects_workflow_with_unregistered_type_falls_back() -> None:
 
     model = _FakeRouterModel(
         LLMRouteDecision(
-            selected_mode=SelectedMode.WORKFLOW, task_type="translate",
-            is_ambiguous=False, reason="translation request",
+            selected_mode=SelectedMode.WORKFLOW,
+            task_type="translate",
+            is_ambiguous=False,
+            reason="translation request",
         )
     )
     router = TaskRouter(registry=_registry(), model=model)
@@ -208,8 +227,10 @@ async def test_ambiguous_llm_decision_falls_back_to_deep_agent() -> None:
 
     model = _FakeRouterModel(
         LLMRouteDecision(
-            selected_mode=SelectedMode.DEEP_AGENT, task_type=None,
-            is_ambiguous=True, reason="unclear intent",
+            selected_mode=SelectedMode.DEEP_AGENT,
+            task_type=None,
+            is_ambiguous=True,
+            reason="unclear intent",
         )
     )
     router = TaskRouter(registry=_registry(), model=model)
@@ -236,8 +257,10 @@ async def test_task_type_is_normalized_before_registry_lookup() -> None:
 
     model = _FakeRouterModel(
         LLMRouteDecision(
-            selected_mode=SelectedMode.DEEP_AGENT, task_type=None,
-            is_ambiguous=True, reason="test",
+            selected_mode=SelectedMode.DEEP_AGENT,
+            task_type=None,
+            is_ambiguous=True,
+            reason="test",
         )
     )
     router = TaskRouter(registry=_registry(), model=model)

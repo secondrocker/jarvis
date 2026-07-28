@@ -77,10 +77,14 @@ class FakeTaskService:
             self._EventType.TASK_COMPLETED,
         ):
             seq += 1
-            data = {"message": "fake"} if etype == self._EventType.TASK_STARTED else {
-                "selected_mode": "workflow",
-                "task_type": request.task_type,
-            }
+            data = (
+                {"message": "fake"}
+                if etype == self._EventType.TASK_STARTED
+                else {
+                    "selected_mode": "workflow",
+                    "task_type": request.task_type,
+                }
+            )
             if etype == self._EventType.TASK_COMPLETED:
                 data = {
                     "selected_mode": "workflow",
@@ -96,7 +100,6 @@ class FakeTaskService:
                 timestamp=datetime.now(UTC),
                 data=data,
             )
-
 
     async def invoke(self, request: Any) -> Any:
         self.invoke_calls.append(request)

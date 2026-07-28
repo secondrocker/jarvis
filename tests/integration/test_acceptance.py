@@ -1,0 +1,166 @@
+"""End-to-end acceptance tests with fully assembled graph and fakes."""
+
+import pytest
+
+from agent_app.deep_agents.adapter import DeepAgentAdapter
+from agent_app.infrastructure.checkpoint import create_checkpointer
+from agent_app.orchestration.graph import build_orchestration_graph
+from agent_app.orchestration.registry import WorkflowRegistry
+from agent_app.orchestration.router import TaskRouter
+from agent_app.schemas.events import EventType
+from agent_app.schemas.tasks import (
+    ExecutionMode,
+    SelectedMode,
+    TaskRequest,
+)
+from agent_app.services.task_service import TaskService
+from agent_app.workflows.summary.graph import build_summary_graph
+
+
+class _FakeSummaryModel:
+    """Fake model whose with_structured_output returns a summary."""
+
+    def with_structured_output(self, schema):
+        class _R:
+            async def ainvoke(self, prompt):
+                return schema(summary="这是摘要", key_points=["A", "B"])
+
+        return _R()
+
+
+class _FakeRouterModel:
+    """Fake model returning a deep-agent decision for non-summary text."""
+
+    def with_structured_output(self, schema):
+        class _R:
+            async def ainvoke(self, prompt):
+                return schema(
+                    selected_mode=SelectedMode.DEEP_AGENT,
+                    task_type=None,
+                    is_ambiguous=False,
+                    reason="open-ended planning",
+                )
+
+        return _R()
+
+
+class _FakeDeepAgentRuntime:
+    """Fake deep agent runtime yielding a single answer chunk."""
+
+    async def astream(self, input, config, *, stream_mode):
+        from langchain_core.messages import AIMessageChunk
+
+        yield ("messages", (AIMessageChunk(content="这是一个发布方案"), {}))
+
+
+def _build_service(checkpointer=None) -> TaskService:
+    """Assemble a full TaskService with fakes that need no network."""
+    summary_model = _FakeSummaryModel()
+    router_model = _FakeRouterModel()
+    checkpointer = checkpointer or create_checkpointer()
+
+    summary_graph = build_summary_graph(summary_model)
+    registry = WorkflowRegistry({"summary": summary_graph})
+    router = TaskRouter(registry=registry, model=router_model)
+
+    deep_agent = DeepAgentAdapter(runtime=_FakeDeepAgentRuntime())
+    graph = build_orchestration_graph(
+        router=router,
+        registry=registry,
+        deep_agent=deep_agent,
+        checkpointer=checkpointer,
+    )
+
+    return TaskService(
+        graph=graph,
+        registered_task_types=registry.names(),
+        task_timeout_seconds=10,
+    )
+
+
+@pytest.fixture
+def acceptance_service() -> TaskService:
+    return _build_service()
+
+
+@pytest.mark.asyncio
+async def test_auto_summary_routes_to_workflow(acceptance_service) -> None:
+    response = await acceptance_service.invoke(TaskRequest(message="请总结：Alpha Beta"))
+    assert response.execution.selected_mode == SelectedMode.WORKFLOW
+    assert set(response.result) == {"summary", "key_points"}
+
+
+@pytest.mark.asyncio
+async def test_auto_open_ended_routes_to_deep_agent(acceptance_service) -> None:
+    response = await acceptance_service.invoke(
+        TaskRequest(message="为一个新产品制定分阶段发布方案")
+    )
+    assert response.execution.selected_mode == SelectedMode.DEEP_AGENT
+    assert set(response.result) == {"answer"}
+
+
+@pytest.mark.asyncio
+async def test_explicit_workflow_override(acceptance_service) -> None:
+    response = await acceptance_service.invoke(
+        TaskRequest(
+            message="do something",
+            execution_mode=ExecutionMode.WORKFLOW,
+            task_type="summary",
+        )
+    )
+    assert response.execution.selected_mode == SelectedMode.WORKFLOW
+    assert response.execution.task_type == "summary"
+
+
+@pytest.mark.asyncio
+async def test_same_thread_follow_up_sees_accumulated_messages(acceptance_service) -> None:
+    await acceptance_service.invoke(TaskRequest(message="总结第一段", thread_id="conv-1"))
+    state_after = await acceptance_service._graph.aget_state(
+        {"configurable": {"thread_id": "conv-1"}}
+    )
+    assert len(state_after.values.get("messages", [])) == 1
+
+    await acceptance_service.invoke(TaskRequest(message="总结第二段", thread_id="conv-1"))
+    state_after_2 = await acceptance_service._graph.aget_state(
+        {"configurable": {"thread_id": "conv-1"}}
+    )
+    assert len(state_after_2.values.get("messages", [])) == 2
+
+
+@pytest.mark.asyncio
+async def test_different_threads_are_isolated(acceptance_service) -> None:
+    await acceptance_service.invoke(TaskRequest(message="总结", thread_id="thread-x"))
+    await acceptance_service.invoke(TaskRequest(message="总结", thread_id="thread-y"))
+    state_x = await acceptance_service._graph.aget_state(
+        {"configurable": {"thread_id": "thread-x"}}
+    )
+    state_y = await acceptance_service._graph.aget_state(
+        {"configurable": {"thread_id": "thread-y"}}
+    )
+    assert len(state_x.values.get("messages", [])) == 1
+    assert len(state_y.values.get("messages", [])) == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_success_ends_with_task_completed(acceptance_service) -> None:
+    events = [e async for e in acceptance_service.stream(TaskRequest(message="总结"))]
+    assert events[0].type is EventType.TASK_STARTED
+    assert events[-1].type is EventType.TASK_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_explicit_unregistered_workflow_raises(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    service = _build_service()
+    from agent_app.errors import AppError, ErrorCode
+
+    with pytest.raises(AppError) as error:
+        await service.invoke(
+            TaskRequest(
+                message="x",
+                execution_mode=ExecutionMode.WORKFLOW,
+                task_type="translate",
+            )
+        )
+    assert error.value.code is ErrorCode.INVALID_TASK_TYPE

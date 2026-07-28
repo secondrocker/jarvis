@@ -44,9 +44,7 @@ def test_registry_get_raises_for_missing_task_type() -> None:
 
 
 def test_registry_names_returns_sorted_normalized_keys() -> None:
-    registry = WorkflowRegistry(
-        {"summary": _FakeWorkflow(), "Extract": _FakeWorkflow()}
-    )
+    registry = WorkflowRegistry({"summary": _FakeWorkflow(), "Extract": _FakeWorkflow()})
 
     assert registry.names() == ("extract", "summary")
 

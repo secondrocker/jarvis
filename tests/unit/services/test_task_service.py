@@ -12,22 +12,30 @@ class _FakeSuccessGraph:
     """Fake graph yielding custom events and a final values snapshot."""
 
     async def astream(self, input, config, *, stream_mode):
-        yield ("custom", {"pending_event": {
-            "type": "route.selected",
-            "data": {"selected_mode": "workflow", "task_type": "summary"},
-        }})
-        yield ("custom", {"pending_event": {
-            "type": "node.started", "data": {"node": "workflow.summary"},
-        }})
-        yield ("custom", {"pending_event": {
-            "type": "node.completed", "data": {"node": "workflow.summary"},
-        }})
-        yield ("values", {
+        yield {
+            "pending_event": {
+                "type": "route.selected",
+                "data": {"selected_mode": "workflow", "task_type": "summary"},
+            }
+        }
+        yield {
+            "pending_event": {
+                "type": "node.started",
+                "data": {"node": "workflow.summary"},
+            }
+        }
+        yield {
+            "pending_event": {
+                "type": "node.completed",
+                "data": {"node": "workflow.summary"},
+            }
+        }
+        yield {
             "selected_mode": "workflow",
             "selected_task_type": "summary",
             "route_reason": "Summary intent detected",
             "result": {"summary": "测试摘要", "key_points": ["A"]},
-        })
+        }
 
 
 @pytest.fixture
@@ -86,9 +94,9 @@ async def test_stream_preserves_caller_thread_id(fake_success_graph) -> None:
         registered_task_types={"summary"},
         task_timeout_seconds=5,
     )
-    events = [event async for event in service.stream(
-        TaskRequest(message="总结", thread_id="my-thread")
-    )]
+    events = [
+        event async for event in service.stream(TaskRequest(message="总结", thread_id="my-thread"))
+    ]
     assert all(e.thread_id == "my-thread" for e in events)
 
 
@@ -129,7 +137,7 @@ def test_preflight_allows_deep_agent_without_registered_task_type() -> None:
 async def test_stream_maps_error_state_to_task_failed() -> None:
     class _ErrorGraph:
         async def astream(self, input, config, *, stream_mode):
-            yield ("values", {"error": {"code": "EXECUTION_FAILED", "message": "boom"}})
+            yield {"error": {"code": "EXECUTION_FAILED", "message": "boom"}}
 
     service = TaskService(
         graph=_ErrorGraph(),
@@ -163,7 +171,7 @@ async def test_stream_sanitizes_unknown_exceptions() -> None:
 async def test_invoke_raises_app_error_on_failed_task() -> None:
     class _ErrorGraph:
         async def astream(self, input, config, *, stream_mode):
-            yield ("values", {"error": {"code": "EXECUTION_FAILED", "message": "boom"}})
+            yield {"error": {"code": "EXECUTION_FAILED", "message": "boom"}}
 
     service = TaskService(
         graph=_ErrorGraph(),

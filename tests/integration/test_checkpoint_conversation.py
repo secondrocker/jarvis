@@ -19,6 +19,7 @@ class _FakeRouterModel:
         class _R:
             async def ainvoke(self, prompt):
                 pass
+
         return _R()
 
 
@@ -40,14 +41,26 @@ async def test_same_thread_accumulates_messages_across_turns() -> None:
     graph = _graph()
     config = {"configurable": {"thread_id": "shared"}}
     await graph.ainvoke(
-        {"task_id": "t1", "thread_id": "shared", "message": "总结第一段",
-         "execution_mode": "auto", "requested_task_type": None, "parameters": {}},
+        {
+            "task_id": "t1",
+            "thread_id": "shared",
+            "message": "总结第一段",
+            "execution_mode": "auto",
+            "requested_task_type": None,
+            "parameters": {},
+        },
         config,
     )
     state_after_first = await graph.aget_state(config)
     await graph.ainvoke(
-        {"task_id": "t2", "thread_id": "shared", "message": "总结第二段",
-         "execution_mode": "auto", "requested_task_type": None, "parameters": {}},
+        {
+            "task_id": "t2",
+            "thread_id": "shared",
+            "message": "总结第二段",
+            "execution_mode": "auto",
+            "requested_task_type": None,
+            "parameters": {},
+        },
         config,
     )
     state_after_second = await graph.aget_state(config)
@@ -61,13 +74,25 @@ async def test_same_thread_accumulates_messages_across_turns() -> None:
 async def test_different_threads_are_isolated() -> None:
     graph = _graph()
     await graph.ainvoke(
-        {"task_id": "t1", "thread_id": "thread-a", "message": "总结",
-         "execution_mode": "auto", "requested_task_type": None, "parameters": {}},
+        {
+            "task_id": "t1",
+            "thread_id": "thread-a",
+            "message": "总结",
+            "execution_mode": "auto",
+            "requested_task_type": None,
+            "parameters": {},
+        },
         {"configurable": {"thread_id": "thread-a"}},
     )
     await graph.ainvoke(
-        {"task_id": "t2", "thread_id": "thread-b", "message": "总结",
-         "execution_mode": "auto", "requested_task_type": None, "parameters": {}},
+        {
+            "task_id": "t2",
+            "thread_id": "thread-b",
+            "message": "总结",
+            "execution_mode": "auto",
+            "requested_task_type": None,
+            "parameters": {},
+        },
         {"configurable": {"thread_id": "thread-b"}},
     )
     state_a = await graph.aget_state({"configurable": {"thread_id": "thread-a"}})

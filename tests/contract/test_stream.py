@@ -24,7 +24,8 @@ def _parse_sse(body: str):
 
 def test_stream_returns_ordered_sse_events(client) -> None:
     with client.stream(
-        "POST", "/api/v1/tasks/stream",
+        "POST",
+        "/api/v1/tasks/stream",
         json={"message": "总结", "execution_mode": "workflow", "task_type": "summary"},
     ) as response:
         assert response.status_code == 200
@@ -63,13 +64,18 @@ def test_stream_failure_ends_with_task_failed(client, fake_service) -> None:
             self.stream_calls.append(request)
             yield TaskEvent(
                 type=EventType.TASK_STARTED,
-                task_id="fail-task", thread_id="fail-thread",
-                sequence=1, timestamp=datetime.now(UTC), data={},
+                task_id="fail-task",
+                thread_id="fail-thread",
+                sequence=1,
+                timestamp=datetime.now(UTC),
+                data={},
             )
             yield TaskEvent(
                 type=EventType.TASK_FAILED,
-                task_id="fail-task", thread_id="fail-thread",
-                sequence=2, timestamp=datetime.now(UTC),
+                task_id="fail-task",
+                thread_id="fail-thread",
+                sequence=2,
+                timestamp=datetime.now(UTC),
                 data={"code": "EXECUTION_FAILED", "reason": "agent error"},
             )
 
@@ -79,7 +85,8 @@ def test_stream_failure_ends_with_task_failed(client, fake_service) -> None:
 
     with TestClient(app) as c:
         with c.stream(
-            "POST", "/api/v1/tasks/stream",
+            "POST",
+            "/api/v1/tasks/stream",
             json={"message": "do something"},
         ) as response:
             assert response.status_code == 200

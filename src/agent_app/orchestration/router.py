@@ -47,9 +47,7 @@ class TaskRouter:
             )
 
         if request.execution_mode is ExecutionMode.DEEP_AGENT:
-            return RouteDecision.deep_agent(
-                reason="Explicit deep agent execution requested"
-            )
+            return RouteDecision.deep_agent(reason="Explicit deep agent execution requested")
 
         # 2. Registered task_type wins over heuristic/LLM.
         if request.task_type and request.task_type.strip():
@@ -88,9 +86,7 @@ class TaskRouter:
 
         # 5. Ambiguous or invalid → safe Deep Agent fallback.
         if decision.is_ambiguous:
-            return RouteDecision.deep_agent(
-                reason="Task intent is ambiguous"
-            )
+            return RouteDecision.deep_agent(reason="Task intent is ambiguous")
 
         if decision.selected_mode is SelectedMode.DEEP_AGENT:
             return RouteDecision.deep_agent(reason=decision.reason)
@@ -102,6 +98,4 @@ class TaskRouter:
                 reason=decision.reason,
             )
 
-        return RouteDecision.deep_agent(
-            reason="No suitable registered workflow for this task"
-        )
+        return RouteDecision.deep_agent(reason="No suitable registered workflow for this task")

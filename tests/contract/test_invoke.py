@@ -41,9 +41,7 @@ def test_invoke_rejects_workflow_without_task_type(client) -> None:
 
 
 def test_invoke_maps_app_error_to_http_status(test_settings) -> None:
-    failing = FakeTaskService(
-        fail_with=AppError(ErrorCode.UPSTREAM_UNAVAILABLE, "OpenAI is down")
-    )
+    failing = FakeTaskService(fail_with=AppError(ErrorCode.UPSTREAM_UNAVAILABLE, "OpenAI is down"))
     app = create_app(settings=test_settings, service=failing)
     with TestClient(app) as c:
         response = c.post(
@@ -56,9 +54,7 @@ def test_invoke_maps_app_error_to_http_status(test_settings) -> None:
 
 
 def test_invoke_maps_internal_error_to_500(test_settings) -> None:
-    failing = FakeTaskService(
-        fail_with=AppError(ErrorCode.INTERNAL_ERROR, "something broke")
-    )
+    failing = FakeTaskService(fail_with=AppError(ErrorCode.INTERNAL_ERROR, "something broke"))
     app = create_app(settings=test_settings, service=failing)
     with TestClient(app) as c:
         response = c.post(

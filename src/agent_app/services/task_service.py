@@ -68,16 +68,16 @@ class TaskService:
         terminal: TaskEvent | None = None
         try:
             async with asyncio.timeout(self._timeout):
-                async for stream_mode, chunk in self._graph.astream(
+                async for chunk in self._graph.astream(
                     graph_input,
                     config,
                     stream_mode=("custom", "values"),
                 ):
-                    if stream_mode == "custom":
-                        pending = PendingEvent(**chunk.get("pending_event", chunk))
+                    if isinstance(chunk, dict) and "pending_event" in chunk:
+                        pending = PendingEvent(**chunk["pending_event"])
                         yield sequencer.next(pending.type, pending.data)
-                    elif stream_mode == "values":
-                        final_values = chunk if isinstance(chunk, dict) else {}
+                    elif isinstance(chunk, dict):
+                        final_values = chunk
         except TimeoutError:
             terminal = sequencer.next(
                 EventType.TASK_FAILED,
@@ -104,8 +104,10 @@ class TaskService:
             err = final_values["error"]
             terminal = sequencer.next(
                 EventType.TASK_FAILED,
-                {"code": err.get("code", ErrorCode.EXECUTION_FAILED.value),
-                 "reason": err.get("message", "execution failed")},
+                {
+                    "code": err.get("code", ErrorCode.EXECUTION_FAILED.value),
+                    "reason": err.get("message", "execution failed"),
+                },
             )
             yield terminal
             return

@@ -41,7 +41,9 @@ def test_factory_excludes_shell_and_subagent_tools(monkeypatch) -> None:
     monkeypatch.setattr(factory_mod, "create_deep_agent", fake_create_deep_agent)
 
     create_restricted_deep_agent(
-        model=object(), checkpointer=object(), skill_root=Path("/fake/skills"),
+        model=object(),
+        checkpointer=object(),
+        skill_root=Path("/fake/skills"),
     )
 
     profile_label = captured["kwargs"].get("harness_profile")

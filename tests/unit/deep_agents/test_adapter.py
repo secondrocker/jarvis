@@ -32,12 +32,19 @@ def _msg_stream(message):
 @pytest.mark.asyncio
 async def test_adapter_maps_events_and_returns_answer() -> None:
     chunks = [
-        _msg_stream(AIMessageChunk(content="", tool_calls=[
-            {"name": "write_todos", "args": {}, "id": "tc-1"}
-        ])),
-        _msg_stream(ToolMessage(
-            content="ok", name="write_todos", tool_call_id="tc-1", status="success",
-        )),
+        _msg_stream(
+            AIMessageChunk(
+                content="", tool_calls=[{"name": "write_todos", "args": {}, "id": "tc-1"}]
+            )
+        ),
+        _msg_stream(
+            ToolMessage(
+                content="ok",
+                name="write_todos",
+                tool_call_id="tc-1",
+                status="success",
+            )
+        ),
         _msg_stream(AIMessageChunk(content="发布方案")),
     ]
     adapter = DeepAgentAdapter(runtime=_FakeRuntime(chunks))
@@ -66,7 +73,10 @@ async def test_adapter_accumulates_multi_chunk_answer() -> None:
     ]
     adapter = DeepAgentAdapter(runtime=_FakeRuntime(chunks))
     result = await adapter.run(
-        message="test", messages=[], config={}, emit=lambda _: None,
+        message="test",
+        messages=[],
+        config={},
+        emit=lambda _: None,
     )
     assert result == {"answer": "第一步：准备"}
 
@@ -80,7 +90,10 @@ async def test_adapter_ignores_unknown_events() -> None:
     adapter = DeepAgentAdapter(runtime=_FakeRuntime(chunks))
     emitted = []
     result = await adapter.run(
-        message="test", messages=[], config={}, emit=emitted.append,
+        message="test",
+        messages=[],
+        config={},
+        emit=emitted.append,
     )
     assert result == {"answer": "answer"}
     assert [e.type for e in emitted] == [EventType.CONTENT_DELTA]
@@ -92,7 +105,10 @@ async def test_adapter_raises_when_no_answer() -> None:
     adapter = DeepAgentAdapter(runtime=_FakeRuntime(chunks))
     with pytest.raises(AppError) as error:
         await adapter.run(
-            message="test", messages=[], config={}, emit=lambda _: None,
+            message="test",
+            messages=[],
+            config={},
+            emit=lambda _: None,
         )
     assert error.value.code is ErrorCode.EXECUTION_FAILED
     assert error.value.public_message == "Deep Agent returned no answer"
@@ -108,7 +124,10 @@ async def test_adapter_maps_runtime_exception_to_execution_failed() -> None:
     adapter = DeepAgentAdapter(runtime=_ErroringRuntime())
     with pytest.raises(AppError) as error:
         await adapter.run(
-            message="test", messages=[], config={}, emit=lambda _: None,
+            message="test",
+            messages=[],
+            config={},
+            emit=lambda _: None,
         )
     assert error.value.code is ErrorCode.EXECUTION_FAILED
     assert error.value.public_message == "Deep Agent execution failed"

@@ -11,9 +11,7 @@ from agent_app.workflows.summary.schemas import SummaryResult
 async def test_summary_graph_returns_structured_result(fake_summary_model) -> None:
     graph = build_summary_graph(fake_summary_model)
 
-    output = await graph.ainvoke(
-        {"text": "Alpha. Beta.", "language": "zh-CN", "max_words": 100}
-    )
+    output = await graph.ainvoke({"text": "Alpha. Beta.", "language": "zh-CN", "max_words": 100})
 
     assert output["result"] == {
         "summary": "测试摘要",
