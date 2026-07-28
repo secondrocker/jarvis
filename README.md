@@ -5,18 +5,29 @@
 ## 架构
 
 ```
-客户端 ──▶ FastAPI ──▶ TaskService ──▶ 编排图 (LangGraph)
+客户端 ──▶ FastAPI ──▶ TaskService ──▶ 顶层编排图 (LangGraph)
                                          │
-                          ┌──────────────┴──────────────┐
-                          ▼                              ▼
-                    TaskRouter                     DeepAgentAdapter
-                   (优先级链)                      (受限 harness)
-                          │                              │
-              ┌───────────┴──────────┐         deepagents 0.6.x
-              ▼                      ▼         skills: solution_planning
-          摘要子图             Deep Agent 节点   已排除: execute, task
-        (结构化 LLM)
+                                         ▼
+                                select_route 节点
+                                         │
+                                         ▼
+                                    TaskRouter
+                                         │
+                           ┌─────────────┴─────────────┐
+                           ▼                           ▼
+                    workflow 节点               deep_agent 节点
+                           │                           │
+                           ▼                           ▼
+                  WorkflowRegistry            DeepAgentAdapter
+                           │                           │
+                           ▼                           ▼
+                       摘要子图              Deep Agent Runtime
+                    （结构化 LLM）            （受限 harness）
 ```
+
+`workflow` 与 `deep_agent` 是顶层编排图中的平级执行节点。`TaskRouter` 由
+`select_route` 节点调用并负责选择执行分支；`DeepAgentAdapter` 则是
+`deep_agent` 节点内部使用的运行时适配器。
 
 **路由优先级**（从高到低）：
 
@@ -27,7 +38,7 @@
 5. LLM 辅助分类
 6. 意图模糊或无法匹配 → 安全回退到 Deep Agent
 
-Deep Agent 受到严格限制：通过 `HarnessProfile` 排除了 `execute`（Shell）和 `task`（子代理调度）工具。它使用 `StateBackend`（进程内虚拟文件系统）和 `solution_planning` 技能运行。
+Deep Agent Runtime 受到严格限制：通过 `HarnessProfile` 排除了 `execute`（Shell）和 `task`（子代理调度）工具。它使用 `StateBackend`（进程内虚拟文件系统）和 `solution_planning` 技能运行。
 
 ## 前置条件
 
