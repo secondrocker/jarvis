@@ -1,4 +1,4 @@
-"""Contract tests for the invoke endpoint."""
+"""同步调用接口的契约测试。"""
 
 from fakes import FakeTaskService
 from fastapi.testclient import TestClient

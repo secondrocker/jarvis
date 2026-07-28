@@ -1,4 +1,4 @@
-"""Tests proving thread isolation and multi-turn checkpoint behavior."""
+"""验证线程隔离与多轮检查点行为的测试。"""
 
 import pytest
 

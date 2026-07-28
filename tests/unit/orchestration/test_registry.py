@@ -1,4 +1,4 @@
-"""Unit tests for the WorkflowRegistry."""
+"""WorkflowRegistry 的单元测试。"""
 
 import pytest
 
@@ -7,7 +7,7 @@ from agent_app.orchestration.registry import Workflow, WorkflowRegistry
 
 
 class _FakeWorkflow:
-    """Minimal workflow satisfying the Workflow protocol."""
+    """满足 Workflow 协议的最小工作流替身。"""
 
     async def ainvoke(self, input, config=None):
         return {"echo": input}

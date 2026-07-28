@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# End-to-end smoke test: starts the server and exercises three request paths.
-# Requires a valid OPENAI_API_KEY and OPENAI_MODEL in the environment or .env.
+# 端到端冒烟测试：启动服务并验证三条请求路径。
+# 需要在环境变量或 .env 中提供有效的 OPENAI_API_KEY 和 OPENAI_MODEL。
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8000}"
 POLL_INTERVAL=1
 MAX_WAIT=30
 
-# --- Pre-flight checks -------------------------------------------------------
+# --- 前置检查 ---------------------------------------------------------------
 
 if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   if [[ -f .env ]]; then
@@ -26,7 +26,7 @@ if [[ -z "${OPENAI_MODEL:-}" ]]; then
   exit 1
 fi
 
-# --- Start server ------------------------------------------------------------
+# --- 启动服务 ---------------------------------------------------------------
 
 echo "Starting server (model: ${OPENAI_MODEL}) ..."
 uv run uvicorn agent_app.main:create_app --factory --port 8000 &
@@ -38,7 +38,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Poll /health until ready
+# 轮询 /health，直至服务就绪
 echo -n "Waiting for server "
 for _ in $(seq 1 "${MAX_WAIT}"); do
   if curl -sf "${BASE_URL}/health" >/dev/null 2>&1; then
@@ -55,7 +55,7 @@ if ! curl -sf "${BASE_URL}/health" >/dev/null 2>&1; then
   exit 1
 fi
 
-# --- Test 1: Auto-routed summary ---------------------------------------------
+# --- 测试 1：自动路由摘要 ---------------------------------------------------
 
 echo ""
 echo "=== Test 1: Auto-routed summary (keyword match) ==="
@@ -70,7 +70,7 @@ if [[ "${SELECTED_MODE}" != "workflow" ]]; then
 fi
 echo "PASS: routed to workflow"
 
-# --- Test 2: Explicit deep agent ---------------------------------------------
+# --- 测试 2：显式 Deep Agent ------------------------------------------------
 
 echo ""
 echo "=== Test 2: Explicit deep agent ==="
@@ -85,7 +85,7 @@ if [[ "${DEEP_MODE}" != "deep_agent" ]]; then
 fi
 echo "PASS: routed to deep_agent"
 
-# --- Test 3: SSE streaming ---------------------------------------------------
+# --- 测试 3：SSE 流式响应 ---------------------------------------------------
 
 echo ""
 echo "=== Test 3: SSE streaming (summary) ==="

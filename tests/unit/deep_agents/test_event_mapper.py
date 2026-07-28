@@ -1,4 +1,4 @@
-"""Unit tests for deep agent event mapping."""
+"""Deep Agent 事件映射的单元测试。"""
 
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 

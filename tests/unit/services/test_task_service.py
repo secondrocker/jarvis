@@ -1,4 +1,4 @@
-"""Unit tests for TaskService stream ordering and invoke aggregation."""
+"""TaskService 流顺序与同步聚合行为的单元测试。"""
 
 import pytest
 
@@ -9,7 +9,7 @@ from agent_app.services.task_service import TaskService
 
 
 class _FakeSuccessGraph:
-    """Fake graph yielding custom events and a final values snapshot."""
+    """产生自定义事件和最终状态快照的图替身。"""
 
     async def astream(self, input, config, *, stream_mode):
         yield {

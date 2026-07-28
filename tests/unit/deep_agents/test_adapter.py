@@ -1,4 +1,4 @@
-"""Unit tests for the DeepAgentAdapter."""
+"""DeepAgentAdapter 的单元测试。"""
 
 import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
@@ -9,7 +9,7 @@ from agent_app.schemas.events import EventType
 
 
 class _FakeRuntime:
-    """Fake DeepAgentRuntime yielding a controlled stream of chunks."""
+    """产生受控数据块流的 DeepAgentRuntime 替身。"""
 
     def __init__(self, chunks):
         self._chunks = chunks

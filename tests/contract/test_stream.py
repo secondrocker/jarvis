@@ -1,10 +1,17 @@
-"""Contract tests for the SSE streaming endpoint."""
+"""SSE 流式接口的契约测试。"""
 
 import json
 
 
 def _parse_sse(body: str):
-    """Parse SSE body into (event_names, payloads) lists."""
+    """将 SSE 响应体解析为 (event_names, payloads) 列表。
+
+    参数:
+        body: HTTP 客户端收到的完整 SSE 文本。
+
+    返回值:
+        依次解析出的事件名称列表和 JSON 载荷列表。
+    """
     blocks = [b for b in body.split("\n\n") if b.strip()]
     names = []
     payloads = []
@@ -48,7 +55,7 @@ def test_stream_rejects_blank_message_with_422(client) -> None:
 
 
 def test_stream_failure_ends_with_task_failed(client, fake_service) -> None:
-    """When the service fails mid-stream, the stream ends with task.failed."""
+    """服务在流中途失败时，事件流必须以 task.failed 结束。"""
     from datetime import UTC, datetime
 
     from fakes import FakeTaskService

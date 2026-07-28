@@ -1,4 +1,4 @@
-"""Contract tests for the health endpoint."""
+"""健康检查接口的契约测试。"""
 
 
 def test_health_returns_ok(client) -> None:

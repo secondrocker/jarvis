@@ -1,4 +1,4 @@
-"""Test doubles for model-dependent workflow tests."""
+"""依赖模型的工作流测试所使用的测试替身。"""
 
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -8,14 +8,21 @@ from agent_app.workflows.summary.schemas import SummaryResult
 
 
 class FakeStructuredSummaryRunnable:
-    """Async runnable returning a fixed, schema-valid summary result."""
+    """返回固定且符合模型约束的摘要结果的异步可运行对象。"""
 
     def __init__(self) -> None:
         self.inputs: list[Any] = []
         self.error: Exception | None = None
 
     async def ainvoke(self, input_value: Any) -> SummaryResult:
-        """Record the prompt boundary and return the controlled model response."""
+        """记录提示词边界，并返回受控的模型响应。
+
+        参数:
+            input_value: 工作流渲染后发送给模型的提示词值。
+
+        返回值:
+            固定且符合模型约束的摘要结果。
+        """
         self.inputs.append(input_value)
         if self.error is not None:
             raise self.error
@@ -23,22 +30,34 @@ class FakeStructuredSummaryRunnable:
 
 
 class FakeSummaryModel:
-    """Small LangChain-compatible fake for structured summary generation."""
+    """用于生成结构化摘要的轻量 LangChain 兼容替身。"""
 
     def __init__(self) -> None:
         self.structured_schema: type[SummaryResult] | None = None
         self.runnable = FakeStructuredSummaryRunnable()
 
     def with_structured_output(self, schema: type[SummaryResult]) -> FakeStructuredSummaryRunnable:
-        """Bind the requested response schema without contacting an external service."""
+        """绑定请求的响应模型，且不访问外部服务。
+
+        参数:
+            schema: 调用方要求模型遵循的结构化响应类型。
+
+        返回值:
+            可记录输入并返回固定摘要的异步对象。
+        """
         self.structured_schema = schema
         return self.runnable
 
 
 class FakeTaskService:
-    """In-memory service recording calls and returning a stable contract."""
+    """记录调用并返回稳定契约的内存服务替身。"""
 
     def __init__(self, *, fail_with: Any = None) -> None:
+        """初始化可选择成功或失败路径的服务替身。
+
+        参数:
+            fail_with: 调用时需要抛出的可选异常。
+        """
         from agent_app.schemas.events import EventType, TaskEvent
         from agent_app.schemas.tasks import (
             ExecutionInfo,
@@ -62,9 +81,22 @@ class FakeTaskService:
         self._fail_with = fail_with
 
     def preflight(self, request: Any) -> None:
+        """模拟无需额外校验的服务预检。
+
+        参数:
+            request: 接口传入的任务请求。
+        """
         pass
 
     async def stream(self, request: Any) -> AsyncIterator[Any]:
+        """产生固定顺序的任务事件。
+
+        参数:
+            request: 接口传入的任务请求。
+
+        返回值:
+            从开始到完成的异步任务事件流。
+        """
         self.stream_calls.append(request)
         if self._fail_with is not None:
             raise self._fail_with
@@ -102,6 +134,14 @@ class FakeTaskService:
             )
 
     async def invoke(self, request: Any) -> Any:
+        """返回固定的同步任务响应。
+
+        参数:
+            request: 接口传入的任务请求。
+
+        返回值:
+            符合公开响应契约的成功结果。
+        """
         self.invoke_calls.append(request)
         if self._fail_with is not None:
             raise self._fail_with

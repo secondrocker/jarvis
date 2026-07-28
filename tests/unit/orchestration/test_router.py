@@ -1,4 +1,4 @@
-"""Unit tests for TaskRouter precedence and LLM-assisted routing."""
+"""TaskRouter 优先级与 LLM 辅助路由的单元测试。"""
 
 import httpx
 import pytest
@@ -10,7 +10,7 @@ from agent_app.schemas.tasks import ExecutionMode, SelectedMode, TaskRequest
 
 
 class _FakeRoutingRunnable:
-    """Async runnable returning a controlled LLMRouteDecision."""
+    """返回受控 LLMRouteDecision 的异步可运行对象。"""
 
     def __init__(self, decision, error=None):
         self.decision = decision
@@ -23,7 +23,7 @@ class _FakeRoutingRunnable:
 
 
 class _FakeRouterModel:
-    """LangChain-compatible fake that records calls and returns a bound runnable."""
+    """记录调用并返回已绑定可运行对象的 LangChain 兼容替身。"""
 
     def __init__(self, decision, error=None):
         self.calls = []
@@ -39,7 +39,7 @@ class _FakeRouterModel:
 
 
 def _registry():
-    """Build a registry with a single summary workflow."""
+    """构建只包含摘要工作流的注册表。"""
     from agent_app.orchestration.registry import WorkflowRegistry
 
     class _FakeWorkflow:
@@ -49,7 +49,7 @@ def _registry():
     return WorkflowRegistry({"summary": _FakeWorkflow()})
 
 
-# ---- Explicit mode tests ----
+# ---- 显式执行模式测试 ----
 
 
 @pytest.mark.asyncio
@@ -119,7 +119,7 @@ async def test_explicit_deep_agent_ignores_task_type_no_llm() -> None:
     assert model.calls == []
 
 
-# ---- Registry + deterministic rule tests ----
+# ---- 注册表与确定性规则测试 ----
 
 
 @pytest.mark.asyncio
@@ -179,7 +179,7 @@ async def test_broad_word_does_not_trigger_deterministic_rule() -> None:
     assert len(model.calls) == 1
 
 
-# ---- LLM fallback tests ----
+# ---- LLM 回退测试 ----
 
 
 @pytest.mark.asyncio

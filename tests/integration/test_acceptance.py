@@ -1,4 +1,4 @@
-"""End-to-end acceptance tests with fully assembled graph and fakes."""
+"""使用完整装配图和测试替身的端到端验收测试。"""
 
 import pytest
 
@@ -18,7 +18,7 @@ from agent_app.workflows.summary.graph import build_summary_graph
 
 
 class _FakeSummaryModel:
-    """Fake model whose with_structured_output returns a summary."""
+    """通过 with_structured_output 返回摘要的模型替身。"""
 
     def with_structured_output(self, schema):
         class _R:
@@ -29,7 +29,7 @@ class _FakeSummaryModel:
 
 
 class _FakeRouterModel:
-    """Fake model returning a deep-agent decision for non-summary text."""
+    """为非摘要文本返回 Deep Agent 决策的模型替身。"""
 
     def with_structured_output(self, schema):
         class _R:
@@ -45,7 +45,7 @@ class _FakeRouterModel:
 
 
 class _FakeDeepAgentRuntime:
-    """Fake deep agent runtime yielding a single answer chunk."""
+    """只产生一个答案块的 Deep Agent 运行时替身。"""
 
     async def astream(self, input, config, *, stream_mode):
         from langchain_core.messages import AIMessageChunk
@@ -54,7 +54,14 @@ class _FakeDeepAgentRuntime:
 
 
 def _build_service(checkpointer=None) -> TaskService:
-    """Assemble a full TaskService with fakes that need no network."""
+    """使用无需网络的替身装配完整 TaskService。
+
+    参数:
+        checkpointer: 可选的共享检查点，用于验证多轮会话。
+
+    返回值:
+        包含真实路由与编排图、但不访问网络的任务服务。
+    """
     summary_model = _FakeSummaryModel()
     router_model = _FakeRouterModel()
     checkpointer = checkpointer or create_checkpointer()
@@ -80,6 +87,11 @@ def _build_service(checkpointer=None) -> TaskService:
 
 @pytest.fixture
 def acceptance_service() -> TaskService:
+    """创建每个验收用例独享的完整任务服务。
+
+    返回值:
+        使用全新内存检查点的任务服务。
+    """
     return _build_service()
 
 

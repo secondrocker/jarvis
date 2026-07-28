@@ -1,4 +1,4 @@
-"""Integration tests for the top-level orchestration graph."""
+"""顶层编排图的集成测试。"""
 
 import pytest
 
@@ -11,14 +11,14 @@ from agent_app.schemas.tasks import SelectedMode
 
 
 class _FakeWorkflow:
-    """Summary workflow fake returning a fixed structured result."""
+    """返回固定结构化结果的摘要工作流替身。"""
 
     async def ainvoke(self, input, config=None):
         return {"summary": "测试摘要", "key_points": ["A", "B"]}
 
 
 class _FakeRouterModel:
-    """Fake router model that returns a deep-agent decision for non-summary text."""
+    """为非摘要文本返回 Deep Agent 决策的路由模型替身。"""
 
     def __init__(self, decision):
         self._decision = decision
@@ -38,7 +38,7 @@ class _FakeRouterModel:
 
 
 class _FakeDeepAgentRuntime:
-    """Fake runtime yielding one content delta."""
+    """只产生一个内容增量的运行时替身。"""
 
     async def astream(self, input, config, *, stream_mode):
         from langchain_core.messages import AIMessageChunk
