@@ -1,4 +1,4 @@
-"""Routing decision DTOs."""
+"""路由决策数据传输模型。"""
 
 from pydantic import BaseModel, Field
 
@@ -6,7 +6,7 @@ from agent_app.schemas.tasks import SelectedMode
 
 
 class LLMRouteDecision(BaseModel):
-    """Structured output schema consumed by the routing LLM."""
+    """路由 LLM 使用的结构化输出模型。"""
 
     selected_mode: SelectedMode
     task_type: str | None = Field(default=None, max_length=64)
@@ -15,7 +15,7 @@ class LLMRouteDecision(BaseModel):
 
 
 class RouteDecision(BaseModel):
-    """Final routing decision after precedence resolution."""
+    """按优先级解析后的最终路由决策。"""
 
     selected_mode: SelectedMode
     task_type: str | None = Field(default=None, max_length=64)
@@ -23,7 +23,15 @@ class RouteDecision(BaseModel):
 
     @classmethod
     def deep_agent(cls, reason: str, task_type: str | None = None) -> "RouteDecision":
-        """Build a Deep Agent decision with a safe reason."""
+        """使用可安全公开的原因构建 Deep Agent 决策。
+
+        参数:
+            reason: 可向调用方返回的路由原因。
+            task_type: 可选的原始任务类型。
+
+        返回值:
+            执行模式固定为 Deep Agent 的路由决策。
+        """
         return cls(
             selected_mode=SelectedMode.DEEP_AGENT,
             task_type=task_type,
@@ -32,7 +40,15 @@ class RouteDecision(BaseModel):
 
     @classmethod
     def workflow(cls, task_type: str, reason: str) -> "RouteDecision":
-        """Build a workflow decision for a registered task type."""
+        """为已注册的任务类型构建工作流决策。
+
+        参数:
+            task_type: 已注册的固定工作流任务类型。
+            reason: 可向调用方返回的路由原因。
+
+        返回值:
+            执行模式固定为工作流的路由决策。
+        """
         return cls(
             selected_mode=SelectedMode.WORKFLOW,
             task_type=task_type,

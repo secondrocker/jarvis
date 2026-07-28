@@ -1,4 +1,4 @@
-"""Top-level orchestration graph state."""
+"""顶层编排图状态。"""
 
 from typing import Annotated, Any, TypedDict
 
@@ -7,7 +7,7 @@ from langgraph.graph.message import add_messages
 
 
 class AgentState(TypedDict, total=False):
-    """Shared state flowing through the top-level orchestration graph."""
+    """在顶层编排图中流转的共享状态。"""
 
     task_id: str
     thread_id: str

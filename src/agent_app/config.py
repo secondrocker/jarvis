@@ -1,3 +1,5 @@
+"""应用配置模型及其缓存入口。"""
+
 from functools import lru_cache
 
 from pydantic import Field, SecretStr
@@ -5,6 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """集中定义从环境变量和 .env 文件读取的应用配置。"""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -23,4 +27,9 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    """返回进程内复用的应用配置实例。
+
+    返回值:
+        从环境变量与 .env 文件解析并缓存的配置。
+    """
     return Settings()

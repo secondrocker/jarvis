@@ -15,6 +15,7 @@
 - 不修改运行逻辑、类型声明、函数签名、导入、错误消息、日志内容、提示词、API 数据、测试断言或运行时依赖。
 - 保留 `# type: ignore`、`# pragma: no cover`、`# noqa`、`# shellcheck` 等工具标记以及必要的技术名词和代码符号。
 - 不添加解释简单赋值、直接返回或明显条件判断的低价值逐行注释。
+- 函数 docstring 使用中文“参数”“返回值”“异常”章节说明接口；无参数、无返回值的测试函数不添加空章节。
 
 ---
 
@@ -220,4 +221,3 @@ git diff HEAD~2 -- README.md src/agent_app tests scripts/smoke.sh
 git add README.md
 git commit -m "docs: translate README to Chinese"
 ```
-

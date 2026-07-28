@@ -1,1 +1,1 @@
-"""Fixed LangGraph workflows available to the application."""
+"""应用可用的固定 LangGraph 工作流。"""

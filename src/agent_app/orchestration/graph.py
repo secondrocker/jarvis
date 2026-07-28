@@ -1,4 +1,4 @@
-"""Top-level LangGraph orchestration with conditional routing."""
+"""支持条件路由的顶层 LangGraph 编排图。"""
 
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -19,25 +19,42 @@ from agent_app.schemas.tasks import ExecutionMode, SelectedMode, TaskRequest
 
 try:
     from langgraph.config import get_stream_writer
-except ImportError:  # pragma: no cover — older langgraph fallback
+except ImportError:  # pragma: no cover — 兼容旧版 langgraph
     get_stream_writer = None  # type: ignore[assignment]
 
 
 def _emit(event_type: EventType, data: dict[str, Any]) -> None:
-    """Emit a custom streaming event if a stream writer is available."""
+    """流写入器可用时发出自定义流式事件。
+
+    参数:
+        event_type: 待发出的稳定事件类型。
+        data: 事件携带的业务数据。
+    """
     if get_stream_writer is None:
         return
     try:
         writer = get_stream_writer()
         writer({"pending_event": PendingEvent(type=event_type, data=data).model_dump()})
-    except Exception:  # pragma: no cover — streaming is best-effort
+    except Exception:  # pragma: no cover — 流式事件采用尽力而为策略
         pass
 
 
 def make_normalize_node() -> Callable[[AgentState], dict[str, Any]]:
-    """Return the node that appends the user message to checkpoint history."""
+    """返回将用户消息追加到检查点历史记录的节点。
+
+    返回值:
+        接收编排状态并返回新增消息的同步节点。
+    """
 
     def normalize_input(state: AgentState) -> dict[str, Any]:
+        """把当前用户消息转换为可累积的 LangChain 消息。
+
+        参数:
+            state: 包含当前用户消息的编排状态。
+
+        返回值:
+            需要追加到检查点历史记录的消息更新。
+        """
         message = state["message"]
         return {"messages": [HumanMessage(content=message)]}
 
@@ -47,9 +64,24 @@ def make_normalize_node() -> Callable[[AgentState], dict[str, Any]]:
 def make_route_node(
     router: TaskRouter,
 ) -> Callable[[AgentState], Awaitable[dict[str, Any]]]:
-    """Return the async node that selects the execution path."""
+    """返回选择执行路径的异步节点。
+
+    参数:
+        router: 负责按优先级选择执行路径的任务路由器。
+
+    返回值:
+        接收编排状态并返回路由字段的异步节点。
+    """
 
     async def select_route(state: AgentState) -> dict[str, Any]:
+        """选择执行路径并发出路由事件。
+
+        参数:
+            state: 已完成输入规范化的编排状态。
+
+        返回值:
+            选定模式、任务类型和路由原因组成的状态更新。
+        """
         request = TaskRequest(
             message=state["message"],
             execution_mode=ExecutionMode(state["execution_mode"]),
@@ -78,9 +110,25 @@ def make_route_node(
 def make_workflow_node(
     registry: WorkflowRegistry,
 ) -> Callable[[AgentState, RunnableConfig], Awaitable[dict[str, Any]]]:
-    """Return the async node that executes a registered fixed workflow."""
+    """返回执行已注册固定工作流的异步节点。
+
+    参数:
+        registry: 用于取得目标固定工作流的注册表。
+
+    返回值:
+        接收编排状态与运行配置并返回工作流结果的异步节点。
+    """
 
     async def run_workflow(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+        """执行选定的固定工作流并清理其返回状态。
+
+        参数:
+            state: 包含已选任务类型的编排状态。
+            config: 传递给固定工作流的 LangGraph 运行配置。
+
+        返回值:
+            仅包含公开结果或标准化错误的状态更新。
+        """
         task_type = state.get("selected_task_type") or ""
         workflow = registry.get(task_type)
         _emit(EventType.NODE_STARTED, {"node": f"workflow.{task_type}"})
@@ -92,7 +140,7 @@ def make_workflow_node(
         except Exception as error:
             return {"error": {"code": ErrorCode.EXECUTION_FAILED.value, "message": str(error)}}
         _emit(EventType.NODE_COMPLETED, {"node": f"workflow.{task_type}"})
-        # Extract the structured result from the subgraph's full state.
+        # 从子图的完整状态中提取结构化结果，避免向外暴露内部状态字段。
         clean_result = result.get("result", result) if isinstance(result, dict) else {}
         return {"result": clean_result}
 
@@ -102,9 +150,25 @@ def make_workflow_node(
 def make_deep_agent_node(
     deep_agent: DeepAgentAdapter,
 ) -> Callable[[AgentState, RunnableConfig], Awaitable[dict[str, Any]]]:
-    """Return the async node that streams the restricted deep agent."""
+    """返回流式执行受限 Deep Agent 的异步节点。
+
+    参数:
+        deep_agent: 隔离第三方运行时的项目适配器。
+
+    返回值:
+        接收编排状态与运行配置并返回 Agent 结果的异步节点。
+    """
 
     async def run_deep_agent(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+        """执行受限 Deep Agent 并转发标准化流式事件。
+
+        参数:
+            state: 包含当前消息与历史消息的编排状态。
+            config: 传递给 Agent 运行时的 LangGraph 配置。
+
+        返回值:
+            包含 Agent 最终答案的状态更新。
+        """
         _emit(EventType.NODE_STARTED, {"node": "deep_agent"})
         result = await deep_agent.run(
             message=state["message"],
@@ -119,7 +183,14 @@ def make_deep_agent_node(
 
 
 def _route_after_selection(state: AgentState) -> str:
-    """Conditional edge: choose workflow or deep_agent based on selected_mode."""
+    """条件边：根据 selected_mode 选择 workflow 或 deep_agent。
+
+    参数:
+        state: 已包含路由决策的编排状态。
+
+    返回值:
+        下一节点名称 ``workflow`` 或 ``deep_agent``。
+    """
     mode = state.get("selected_mode", "")
     if mode == SelectedMode.WORKFLOW.value:
         return "workflow"
@@ -127,7 +198,14 @@ def _route_after_selection(state: AgentState) -> str:
 
 
 def _extract_summary_params(state: AgentState) -> dict[str, Any]:
-    """Pull optional summary language and max_words from parameters."""
+    """从 parameters 中提取可选的摘要语言和 max_words。
+
+    参数:
+        state: 包含原始任务参数的编排状态。
+
+    返回值:
+        仅包含摘要工作流支持字段的参数字典。
+    """
     params = state.get("parameters") or {}
     out: dict[str, Any] = {}
     if "language" in params:
@@ -144,7 +222,17 @@ def build_orchestration_graph(
     deep_agent: DeepAgentAdapter,
     checkpointer: BaseCheckpointSaver,
 ) -> CompiledStateGraph:
-    """Compile the normalized, routed, checkpointed top-level graph."""
+    """编译具备输入规范化、路由和检查点能力的顶层图。
+
+    参数:
+        router: 任务执行路径路由器。
+        registry: 固定工作流注册表。
+        deep_agent: 受限 Deep Agent 适配器。
+        checkpointer: 保存多轮会话状态的检查点存储。
+
+    返回值:
+        已连接条件边并绑定检查点的顶层编排图。
+    """
     graph = StateGraph(AgentState)
     graph.add_node("normalize_input", make_normalize_node())
     graph.add_node("select_route", make_route_node(router))

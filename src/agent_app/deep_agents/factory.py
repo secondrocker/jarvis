@@ -1,4 +1,4 @@
-"""Factory creating a restricted deep agent with only approved capabilities."""
+"""仅启用获准能力的受限 Deep Agent 工厂。"""
 
 from pathlib import Path
 
@@ -14,14 +14,14 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from agent_app.deep_agents.protocols import DeepAgentRuntime
 
-# Shell tool removed per spec. The `task` (subagent dispatch) tool is dropped
-# separately by disabling the auto-added general-purpose subagent: the harness
-# rejects excluding `SubAgentMiddleware` directly with `ValueError`.
+# 按规格移除 Shell 工具。`task`（子代理调度）工具则通过禁用自动添加的
+# 通用子代理单独移除，因为 harness 会拒绝直接排除 `SubAgentMiddleware`，
+# 并抛出 `ValueError`。
 _EXCLUDED_TOOLS = ("execute",)
 
-# Provider key the OpenAI chat model (see infrastructure/llm.py) resolves to.
-# `create_deep_agent` looks harness profiles up by the model's provider, so a
-# provider-level registration is the match path for a pre-built ChatOpenAI.
+# OpenAI 聊天模型解析得到的提供方键（见 infrastructure/llm.py）。
+# `create_deep_agent` 会按模型提供方查找 harness profile，因此对于预构建的
+# ChatOpenAI，需要在提供方级别注册才能正确匹配。
 _RESTRICTED_PROVIDER_KEY = "openai"
 
 
@@ -31,7 +31,16 @@ def create_restricted_deep_agent(
     checkpointer: BaseCheckpointSaver,
     skill_root: Path,
 ) -> DeepAgentRuntime:
-    """Create a runtime with only approved skills and in-memory capabilities."""
+    """创建仅包含获准技能和内存能力的运行时。
+
+    参数:
+        model: Deep Agent 使用的聊天模型。
+        checkpointer: 保存多轮会话状态的检查点存储。
+        skill_root: 项目内 Deep Agent 技能目录。
+
+    返回值:
+        已禁用 Shell 与子代理调度能力的 Deep Agent 运行时。
+    """
     profile = HarnessProfile(
         excluded_tools=frozenset(_EXCLUDED_TOOLS),
         general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),

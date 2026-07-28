@@ -1,4 +1,4 @@
-"""Safe structured logging configuration for the application."""
+"""应用的安全结构化日志配置。"""
 
 import logging
 from collections.abc import Mapping
@@ -10,7 +10,14 @@ _REDACTED_NON_JSON = "[REDACTED_NON_JSON]"
 
 
 def _safe_json_value(value: Any) -> Any:
-    """Keep JSON-native logging metadata while redacting unsupported values."""
+    """保留 JSON 原生日志元数据，并遮蔽不支持的值。
+
+    参数:
+        value: 即将写入结构化日志的任意值。
+
+    返回值:
+        可安全进行 JSON 序列化的值或固定遮蔽文本。
+    """
     if value is None or isinstance(value, str | int | float | bool):
         return value
     if isinstance(value, Mapping):
@@ -27,12 +34,25 @@ def redact_non_json_values(
     _method_name: str,
     event_dict: dict[str, Any],
 ) -> dict[str, Any]:
-    """Prevent arbitrary objects from reaching the JSON renderer."""
+    """防止任意对象进入 JSON 渲染器。
+
+    参数:
+        _logger: structlog 处理器传入但本函数无需使用的日志器。
+        _method_name: 当前日志方法名称。
+        event_dict: 待渲染的结构化事件字典。
+
+    返回值:
+        所有值均已转换为 JSON 安全形式的事件字典。
+    """
     return {key: _safe_json_value(value) for key, value in event_dict.items()}
 
 
 def configure_logging(log_level: str) -> None:
-    """Configure JSON logs containing timestamps and severity levels."""
+    """配置包含时间戳与严重级别的 JSON 日志。
+
+    参数:
+        log_level: Python 日志级别名称。
+    """
     level = getattr(logging, log_level.upper(), logging.INFO)
     logging.basicConfig(level=level, format="%(message)s")
     structlog.configure(

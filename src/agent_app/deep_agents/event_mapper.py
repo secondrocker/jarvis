@@ -1,4 +1,4 @@
-"""Map deepagents stream chunks to project-normalized PendingEvents."""
+"""将 deepagents 流式数据块映射为项目标准化的 PendingEvent。"""
 
 from typing import Any
 
@@ -8,7 +8,14 @@ from agent_app.schemas.events import EventType, PendingEvent
 
 
 def map_deep_agent_event(message: Any) -> PendingEvent | None:
-    """Translate a stream message to a PendingEvent, or None to ignore."""
+    """将流式消息转换为 PendingEvent；无需处理时返回 None。
+
+    参数:
+        message: deepagents 运行时产生的消息块或状态更新对象。
+
+    返回值:
+        映射后的标准化待处理事件；消息不受支持或无内容时返回 None。
+    """
     if isinstance(message, AIMessageChunk):
         if message.tool_calls:
             tool_name = message.tool_calls[0].get("name", "unknown")

@@ -1,4 +1,4 @@
-"""Adapter wrapping a DeepAgentRuntime behind a project-facing interface."""
+"""将 DeepAgentRuntime 封装在项目接口之后的适配器。"""
 
 from collections.abc import Callable
 from typing import Any
@@ -12,10 +12,14 @@ EmitFn = Callable[[PendingEvent], None]
 
 
 class DeepAgentAdapter:
-    """Run a restricted deep agent and map its output to project events."""
+    """运行受限 Deep Agent，并将输出映射为项目事件。"""
 
     def __init__(self, runtime: DeepAgentRuntime) -> None:
-        """Store the runtime that will be streamed on each run."""
+        """保存每次执行时需要流式调用的运行时。
+
+        参数:
+            runtime: 实现项目流式运行协议的受限 Deep Agent。
+        """
         self._runtime = runtime
 
     async def run(
@@ -26,7 +30,20 @@ class DeepAgentAdapter:
         config: dict[str, Any],
         emit: EmitFn,
     ) -> dict[str, str]:
-        """Stream the agent, emit mapped events, and return the final answer."""
+        """流式执行 Agent、发出映射后的事件并返回最终答案。
+
+        参数:
+            message: 当前轮用户消息。
+            messages: 检查点中已积累的会话消息。
+            config: 当前 LangGraph 运行配置。
+            emit: 接收标准化待处理事件的回调。
+
+        返回值:
+            包含最终 answer 字段的结果字典。
+
+        异常:
+            AppError: 运行时失败或未产生最终答案时抛出。
+        """
         from langchain_core.messages import HumanMessage
 
         full_messages = list(messages) + [HumanMessage(content=message)]

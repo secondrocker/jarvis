@@ -1,1 +1,1 @@
-"""Stable request, response, and event schemas for the application boundary."""
+"""应用边界使用的稳定请求、响应与事件模型。"""

@@ -1,4 +1,4 @@
-"""Unified task execution service wrapping the compiled orchestration graph."""
+"""封装已编译编排图的统一任务执行服务。"""
 
 import asyncio
 from collections.abc import AsyncIterator, Collection
@@ -19,7 +19,7 @@ from agent_app.schemas.tasks import (
 
 
 class TaskService:
-    """Single internal event source for synchronous and streaming execution."""
+    """为同步与流式执行提供唯一的内部事件源。"""
 
     def __init__(
         self,
@@ -28,7 +28,16 @@ class TaskService:
         registered_task_types: Collection[str],
         task_timeout_seconds: float,
     ) -> None:
-        """Store the graph, normalized task names, and positive timeout."""
+        """保存编排图、规范化任务名称和正数超时时间。
+
+        参数:
+            graph: 已编译的顶层编排图。
+            registered_task_types: 可通过工作流执行的任务类型集合。
+            task_timeout_seconds: 单次任务的最大执行秒数。
+
+        异常:
+            ValueError: 超时时间不是正数时抛出。
+        """
         self._graph = graph
         self._task_types = frozenset(t.strip().lower() for t in registered_task_types)
         if task_timeout_seconds <= 0:
@@ -36,7 +45,14 @@ class TaskService:
         self._timeout = task_timeout_seconds
 
     def preflight(self, request: TaskRequest) -> None:
-        """Reject an explicit workflow whose task type is not registered."""
+        """拒绝显式指定但尚未注册任务类型的工作流请求。
+
+        参数:
+            request: 即将执行的任务请求。
+
+        异常:
+            AppError: 显式工作流请求指定了未注册的任务类型时抛出。
+        """
         if request.execution_mode is ExecutionMode.WORKFLOW:
             task_type = (request.task_type or "").strip().lower()
             if task_type not in self._task_types:
@@ -46,7 +62,14 @@ class TaskService:
                 )
 
     async def stream(self, request: TaskRequest) -> AsyncIterator[TaskEvent]:
-        """Yield exactly one started event and one terminal event."""
+        """确保流中只产生一个开始事件和一个终态事件。
+
+        参数:
+            request: 已校验的任务请求。
+
+        返回值:
+            按单调序号异步产生的任务事件流。
+        """
         self.preflight(request)
         task_id = uuid4().hex
         thread_id = request.thread_id or uuid4().hex
@@ -128,7 +151,17 @@ class TaskService:
         yield terminal
 
     async def invoke(self, request: TaskRequest) -> TaskResponse:
-        """Consume stream() and return its validated completed result."""
+        """消费 stream()，并返回校验后的任务完成结果。
+
+        参数:
+            request: 已校验的任务请求。
+
+        返回值:
+            从完成事件聚合得到的同步任务响应。
+
+        异常:
+            AppError: 事件流以失败终态结束或缺少终态时抛出。
+        """
         async for event in self.stream(request):
             if event.type is EventType.TASK_COMPLETED:
                 data = event.data

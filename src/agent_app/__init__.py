@@ -1,1 +1,1 @@
-"""Agent demo application package."""
+"""Agent 演示应用包。"""

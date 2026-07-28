@@ -1,1 +1,1 @@
-"""FastAPI application package."""
+"""FastAPI 应用接口包。"""

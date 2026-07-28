@@ -1,4 +1,4 @@
-"""Prompt definitions for structured summarization."""
+"""结构化摘要使用的提示词定义。"""
 
 from langchain_core.prompts import ChatPromptTemplate
 

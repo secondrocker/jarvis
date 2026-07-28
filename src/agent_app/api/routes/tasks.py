@@ -1,4 +1,4 @@
-"""Synchronous task invocation route."""
+"""同步调用与流式执行任务的路由。"""
 
 from fastapi import APIRouter
 
@@ -14,7 +14,15 @@ async def invoke_task(
     task: TaskRequest,
     service: TaskServiceDep,
 ) -> TaskResponse:
-    """Execute a task synchronously and return the stable response contract."""
+    """同步执行任务并返回稳定的响应契约。
+
+    参数:
+        task: 已通过接口模型校验的任务请求。
+        service: 由应用状态注入的任务服务。
+
+    返回值:
+        成功任务的稳定同步响应。
+    """
     return await service.invoke(task)
 
 
@@ -23,7 +31,15 @@ async def stream_task(
     task: TaskRequest,
     service: TaskServiceDep,
 ):
-    """Stream task events as Server-Sent Events."""
+    """以服务器发送事件（SSE）形式流式返回任务事件。
+
+    参数:
+        task: 已通过接口模型校验的任务请求。
+        service: 由应用状态注入的任务服务。
+
+    返回值:
+        以 ``text/event-stream`` 输出任务事件的流式响应。
+    """
     from starlette.responses import StreamingResponse
 
     service.preflight(task)

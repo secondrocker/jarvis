@@ -1,4 +1,4 @@
-"""Restricted Deep Agent adapter isolating third-party deepagents types."""
+"""受限 Deep Agent 适配层，用于隔离第三方 deepagents 类型。"""
 
 from agent_app.deep_agents.adapter import DeepAgentAdapter
 from agent_app.deep_agents.factory import create_restricted_deep_agent

@@ -1,4 +1,4 @@
-"""Nodes used by the structured summary graph."""
+"""结构化摘要图使用的节点。"""
 
 import re
 from collections.abc import Awaitable, Callable
@@ -12,10 +12,21 @@ from agent_app.workflows.summary.schemas import SummaryResult, SummaryState
 
 
 def make_preprocess_node() -> Callable[[SummaryState], dict[str, Any]]:
-    """Return the pure text-normalization node."""
+    """返回无副作用的文本规范化节点。
+
+    返回值:
+        接收摘要状态并返回规范化文本字段的同步节点。
+    """
 
     def preprocess(state: SummaryState) -> dict[str, Any]:
-        """Collapse whitespace before the supplied text reaches the model."""
+        """在输入文本进入模型前合并多余空白。
+
+        参数:
+            state: 当前摘要工作流状态。
+
+        返回值:
+            仅包含规范化 text 字段的状态更新。
+        """
         normalized_text = re.sub(r"\s+", " ", state.get("text", "")).strip()
         if not normalized_text:
             raise AppError(ErrorCode.INVALID_PARAMETERS, "Summary text is empty")
@@ -27,11 +38,25 @@ def make_preprocess_node() -> Callable[[SummaryState], dict[str, Any]]:
 def make_summarize_node(
     model: BaseChatModel,
 ) -> Callable[[SummaryState], Awaitable[dict[str, Any]]]:
-    """Return the async structured-summary node bound to model."""
+    """返回绑定指定模型的异步结构化摘要节点。
+
+    参数:
+        model: 支持结构化输出绑定的聊天模型。
+
+    返回值:
+        接收摘要状态并返回结构化结果的异步节点。
+    """
     structured_model = model.with_structured_output(SummaryResult)
 
     async def summarize(state: SummaryState) -> dict[str, Any]:
-        """Request the schema-bound model response and make it state-safe."""
+        """请求绑定模型的结构化响应，并转换为可安全写入状态的字典。
+
+        参数:
+            state: 已完成文本预处理的摘要状态。
+
+        返回值:
+            包含结构化摘要结果或标准化错误的状态更新。
+        """
         try:
             prompt = SUMMARY_PROMPT.invoke(
                 {

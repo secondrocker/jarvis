@@ -1,4 +1,4 @@
-"""OpenAI chat model factory."""
+"""OpenAI 聊天模型工厂。"""
 
 from typing import Any
 
@@ -8,7 +8,14 @@ from agent_app.config import Settings
 
 
 def create_chat_model(settings: Settings) -> ChatOpenAI:
-    """Create a ChatOpenAI instance from settings without import-time construction."""
+    """根据配置创建 ChatOpenAI 实例，避免在模块导入阶段初始化。
+
+    参数:
+        settings: 包含模型、认证、端点、超时和重试配置的应用设置。
+
+    返回值:
+        已完成参数配置但尚未发起网络请求的聊天模型实例。
+    """
     kwargs: dict[str, Any] = {
         "api_key": settings.openai_api_key.get_secret_value(),
         "model": settings.openai_model,

@@ -1,4 +1,4 @@
-"""Structured summarization workflow."""
+"""结构化摘要工作流。"""
 
 from agent_app.workflows.summary.graph import build_summary_graph
 from agent_app.workflows.summary.schemas import SummaryInput, SummaryResult, SummaryState
