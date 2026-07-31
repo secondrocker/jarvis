@@ -1,11 +1,15 @@
 """使用完整装配图和测试替身的端到端验收测试。"""
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 
 from agent_app.deep_agents.adapter import DeepAgentAdapter
 from agent_app.infrastructure.checkpoint import create_checkpointer
+from agent_app.orchestration.executors import ExecutorDefinition
 from agent_app.orchestration.graph import build_orchestration_graph
-from agent_app.orchestration.registry import WorkflowRegistry
+from agent_app.orchestration.registry import ExecutorRegistry
 from agent_app.orchestration.router import TaskRouter
 from agent_app.schemas.events import EventType
 from agent_app.schemas.tasks import (
@@ -14,7 +18,7 @@ from agent_app.schemas.tasks import (
     TaskRequest,
 )
 from agent_app.services.task_service import TaskService
-from agent_app.workflows.summary.graph import build_summary_graph
+from agent_app.workflows import create_workflows
 
 
 class _FakeSummaryModel:
@@ -36,7 +40,7 @@ class _FakeRouterModel:
             async def ainvoke(self, prompt):
                 return schema(
                     selected_mode=SelectedMode.DEEP_AGENT,
-                    task_type=None,
+                    executor_type="solution_planning",
                     is_ambiguous=False,
                     reason="open-ended planning",
                 )
@@ -66,21 +70,31 @@ def _build_service(checkpointer=None) -> TaskService:
     router_model = _FakeRouterModel()
     checkpointer = checkpointer or create_checkpointer()
 
-    summary_graph = build_summary_graph(summary_model)
-    registry = WorkflowRegistry({"summary": summary_graph})
+    deep_agent = DeepAgentAdapter(runtime=_FakeDeepAgentRuntime())
+    with patch("agent_app.workflows.create_chat_model", return_value=summary_model):
+        workflows = create_workflows(settings=SimpleNamespace(summary_model="summary-test-model"))
+    registry = ExecutorRegistry(
+        workflows,
+        {
+            "solution_planning": ExecutorDefinition(
+                mode=SelectedMode.DEEP_AGENT,
+                description="Create implementation plans",
+                executor=deep_agent,
+                is_default=True,
+            )
+        },
+    )
     router = TaskRouter(registry=registry, model=router_model)
 
-    deep_agent = DeepAgentAdapter(runtime=_FakeDeepAgentRuntime())
     graph = build_orchestration_graph(
         router=router,
         registry=registry,
-        deep_agent=deep_agent,
         checkpointer=checkpointer,
     )
 
     return TaskService(
         graph=graph,
-        registered_task_types=registry.names(),
+        registry=registry,
         task_timeout_seconds=10,
     )
 
@@ -108,6 +122,7 @@ async def test_auto_open_ended_routes_to_deep_agent(acceptance_service) -> None:
         TaskRequest(message="为一个新产品制定分阶段发布方案")
     )
     assert response.execution.selected_mode == SelectedMode.DEEP_AGENT
+    assert response.execution.agent_type == "solution_planning"
     assert set(response.result) == {"answer"}
 
 
@@ -158,6 +173,29 @@ async def test_stream_success_ends_with_task_completed(acceptance_service) -> No
     events = [e async for e in acceptance_service.stream(TaskRequest(message="总结"))]
     assert events[0].type is EventType.TASK_STARTED
     assert events[-1].type is EventType.TASK_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_deep_agent_stream_exposes_agent_type_and_executor_node(
+    acceptance_service,
+) -> None:
+    events = [
+        event
+        async for event in acceptance_service.stream(
+            TaskRequest(
+                message="制定发布计划",
+                execution_mode=ExecutionMode.DEEP_AGENT,
+            )
+        )
+    ]
+
+    route = next(event for event in events if event.type is EventType.ROUTE_SELECTED)
+    node = next(event for event in events if event.type is EventType.NODE_STARTED)
+    completed = events[-1]
+    assert route.data["task_type"] is None
+    assert route.data["agent_type"] == "solution_planning"
+    assert node.data["node"] == "deep_agent.solution_planning"
+    assert completed.data["agent_type"] == "solution_planning"
 
 
 @pytest.mark.asyncio

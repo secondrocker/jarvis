@@ -18,6 +18,7 @@ def test_invoke_returns_stable_contract(client) -> None:
     assert body["execution"] == {
         "selected_mode": "workflow",
         "task_type": "summary",
+        "agent_type": None,
         "route_reason": "explicit workflow",
     }
     assert body["result"]["summary"] == "测试摘要"
@@ -37,6 +38,48 @@ def test_invoke_rejects_workflow_without_task_type(client) -> None:
         "/api/v1/tasks/invoke",
         json={"message": "hello", "execution_mode": "workflow"},
     )
+    assert response.status_code == 422
+
+
+def test_invoke_returns_selected_agent_type(client) -> None:
+    response = client.post(
+        "/api/v1/tasks/invoke",
+        json={
+            "message": "制定计划",
+            "execution_mode": "deep_agent",
+            "agent_type": "solution_planning",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["execution"] == {
+        "selected_mode": "deep_agent",
+        "task_type": None,
+        "agent_type": "solution_planning",
+        "route_reason": "explicit deep agent",
+    }
+
+
+def test_invoke_rejects_conflicting_target_types(client) -> None:
+    response = client.post(
+        "/api/v1/tasks/invoke",
+        json={
+            "message": "执行",
+            "task_type": "summary",
+            "agent_type": "solution_planning",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_invoke_rejects_task_type_for_deep_agent(client) -> None:
+    response = client.post(
+        "/api/v1/tasks/invoke",
+        json={"message": "执行", "execution_mode": "deep_agent", "task_type": "summary"},
+    )
+
     assert response.status_code == 422
 
 

@@ -1,26 +1,23 @@
-"""结合确定性规则与 LLM 辅助判断的混合任务路由器。"""
+"""结合显式目标、确定性规则与 LLM 的统一执行器路由。"""
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 
 from agent_app.errors import AppError, ErrorCode, normalize_execution_error
-from agent_app.orchestration.registry import WorkflowRegistry
+from agent_app.orchestration.registry import ExecutorRegistry
 from agent_app.orchestration.schemas import LLMRouteDecision, RouteDecision
 from agent_app.schemas.tasks import ExecutionMode, SelectedMode, TaskRequest
 
-# 能明确表示摘要意图的精确短语。
 _SUMMARY_PHRASES = ("总结", "摘要", "概括", "summarize", "summary")
 
 _ROUTING_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a task router for an agent service. Read the user message and "
-            "decide whether it should run as a fixed workflow or a flexible deep agent. "
-            "Choose 'workflow' only when the task clearly maps to a registered capability "
-            "and you can name the task_type. Otherwise choose 'deep_agent'. Set "
-            "is_ambiguous to true when the intent is genuinely unclear. Keep the reason "
-            "short, generic, and free of any sensitive content.",
+            "You route tasks to one registered executor. Choose only an executor from the "
+            "capability list below and return its exact mode and executor_type. Set "
+            "is_ambiguous to true when the intent is genuinely unclear. Keep the reason short, "
+            "generic, and free of sensitive content.\n\nRegistered capabilities:\n{capabilities}",
         ),
         ("human", "{message}"),
     ]
@@ -28,74 +25,58 @@ _ROUTING_PROMPT = ChatPromptTemplate.from_messages(
 
 
 class TaskRouter:
-    """按规格定义的优先级将 TaskRequest 解析为 RouteDecision。"""
+    """按稳定优先级选择已注册 workflow 或 Deep Agent。"""
 
-    def __init__(self, registry: WorkflowRegistry, model: BaseChatModel) -> None:
-        """保存工作流注册表和路由 LLM。
-
-        参数:
-            registry: 查询固定工作流的注册表。
-            model: 在确定性规则无法决策时使用的聊天模型。
-        """
+    def __init__(self, registry: ExecutorRegistry, model: BaseChatModel) -> None:
+        """保存统一执行器注册表和路由 LLM。"""
         self._registry = registry
         self._model = model
 
     async def route(self, request: TaskRequest) -> RouteDecision:
-        """依次应用显式模式、注册表、规则、LLM 和安全回退优先级。
-
-        参数:
-            request: 待选择执行路径的任务请求。
-
-        返回值:
-            包含执行模式、任务类型和决策原因的最终路由结果。
-        """
-        # 1. 显式执行模式拥有最高优先级。
+        """按显式模式、命名目标、规则、LLM 和安全回退依次路由。"""
         if request.execution_mode is ExecutionMode.WORKFLOW:
-            task_type = request.task_type or ""
-            self._registry.get(task_type)  # raises INVALID_TASK_TYPE if missing
+            executor_type = (request.task_type or "").strip().lower()
+            self._registry.get(executor_type, mode=SelectedMode.WORKFLOW)
             return RouteDecision.workflow(
-                task_type=task_type.strip().lower(),
-                reason="Explicit workflow execution requested",
+                executor_type,
+                "Explicit workflow execution requested",
             )
 
         if request.execution_mode is ExecutionMode.DEEP_AGENT:
-            return RouteDecision.deep_agent(reason="Explicit deep agent execution requested")
-
-        # 2. 已注册的 task_type 优先于启发式规则和 LLM。
-        if request.task_type and request.task_type.strip():
-            normalized = request.task_type.strip().lower()
-            if self._registry.contains(normalized):
-                return RouteDecision.workflow(
-                    task_type=normalized,
-                    reason="Registered task type matched",
-                )
-
-        # 3. 使用确定性的摘要意图规则。
-        message_lower = request.message.lower()
-        if any(phrase in message_lower for phrase in _SUMMARY_PHRASES):
-            return RouteDecision.workflow(
-                task_type="summary",
-                reason="Summary intent detected",
+            executor_type = (
+                request.agent_type or ""
+            ).strip().lower() or self._registry.default_agent_type
+            self._registry.get(executor_type, mode=SelectedMode.DEEP_AGENT)
+            return RouteDecision.deep_agent(
+                executor_type,
+                "Explicit deep agent execution requested",
             )
 
-        # 4. 使用 LLM 辅助路由。
+        if request.task_type and request.task_type.strip():
+            executor_type = request.task_type.strip().lower()
+            self._registry.get(executor_type, mode=SelectedMode.WORKFLOW)
+            return RouteDecision.workflow(executor_type, "Registered task type matched")
+
+        if request.agent_type and request.agent_type.strip():
+            executor_type = request.agent_type.strip().lower()
+            self._registry.get(executor_type, mode=SelectedMode.DEEP_AGENT)
+            return RouteDecision.deep_agent(executor_type, "Registered agent type matched")
+
+        if any(phrase in request.message.lower() for phrase in _SUMMARY_PHRASES):
+            self._registry.get("summary", mode=SelectedMode.WORKFLOW)
+            return RouteDecision.workflow("summary", "Summary intent detected")
+
         return await self._route_with_llm(request.message)
 
     async def _route_with_llm(self, message: str) -> RouteDecision:
-        """调用路由 LLM，并应用安全回退规则。
-
-        参数:
-            message: 需要分类的用户消息。
-
-        返回值:
-            经注册表校验和歧义处理后的路由结果。
-
-        异常:
-            AppError: 上游模型出现可识别的瞬时故障时抛出。
-        """
+        """调用路由 LLM，并把无效或歧义选择回退到默认 agent。"""
         structured_model = self._model.with_structured_output(LLMRouteDecision)
+        capabilities = "\n".join(
+            f"- {option.executor_type} [{option.mode.value}]: {option.description}"
+            for option in self._registry.routing_options()
+        )
         try:
-            prompt = _ROUTING_PROMPT.invoke({"message": message})
+            prompt = _ROUTING_PROMPT.invoke({"message": message, "capabilities": capabilities})
             decision: LLMRouteDecision = await structured_model.ainvoke(prompt)
         except AppError:
             raise
@@ -106,18 +87,14 @@ class TaskRouter:
                 fallback_message="Task routing failed",
             ) from error
 
-        # 5. 判断模糊或无效时，安全回退到 Deep Agent。
-        if decision.is_ambiguous:
-            return RouteDecision.deep_agent(reason="Task intent is ambiguous")
+        if not decision.is_ambiguous and decision.executor_type:
+            executor_type = decision.executor_type.strip().lower()
+            if self._registry.contains(executor_type, mode=decision.selected_mode):
+                if decision.selected_mode is SelectedMode.WORKFLOW:
+                    return RouteDecision.workflow(executor_type, decision.reason)
+                return RouteDecision.deep_agent(executor_type, decision.reason)
 
-        if decision.selected_mode is SelectedMode.DEEP_AGENT:
-            return RouteDecision.deep_agent(reason=decision.reason)
-
-        # 6. LLM 选择工作流时，必须给出已注册的任务类型。
-        if decision.task_type and self._registry.contains(decision.task_type):
-            return RouteDecision.workflow(
-                task_type=decision.task_type.strip().lower(),
-                reason=decision.reason,
-            )
-
-        return RouteDecision.deep_agent(reason="No suitable registered workflow for this task")
+        return RouteDecision.deep_agent(
+            self._registry.default_agent_type,
+            "No suitable registered executor for this task",
+        )

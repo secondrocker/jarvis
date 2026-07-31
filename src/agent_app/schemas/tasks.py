@@ -34,6 +34,7 @@ class TaskRequest(BaseModel):
     message: str
     execution_mode: ExecutionMode = ExecutionMode.AUTO
     task_type: str | None = Field(default=None, max_length=64)
+    agent_type: str | None = Field(default=None, max_length=64)
     thread_id: str | None = Field(default=None, max_length=128)
     parameters: dict[str, Any] = Field(default_factory=dict)
 
@@ -54,14 +55,20 @@ class TaskRequest(BaseModel):
         return message
 
     @model_validator(mode="after")
-    def require_task_type_for_explicit_workflow(self) -> "TaskRequest":
-        """在请求进入服务预检前，确保工作流模式已指定任务类型。
+    def validate_execution_target(self) -> "TaskRequest":
+        """确保执行模式与 workflow/agent 目标字段保持一致。
 
         返回值:
             校验通过的当前任务请求。
         """
-        if self.execution_mode is ExecutionMode.WORKFLOW and not (self.task_type or "").strip():
+        has_task_type = bool((self.task_type or "").strip())
+        has_agent_type = bool((self.agent_type or "").strip())
+        if has_task_type and has_agent_type:
+            raise ValueError("task_type and agent_type are mutually exclusive")
+        if self.execution_mode is ExecutionMode.WORKFLOW and not has_task_type:
             raise ValueError("task_type is required when execution_mode is workflow")
+        if self.execution_mode is ExecutionMode.DEEP_AGENT and has_task_type:
+            raise ValueError("task_type is not allowed when execution_mode is deep_agent")
         return self
 
 
@@ -70,6 +77,7 @@ class ExecutionInfo(BaseModel):
 
     selected_mode: SelectedMode
     task_type: str | None
+    agent_type: str | None = None
     route_reason: str
 
 

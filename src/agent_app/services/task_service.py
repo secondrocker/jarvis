@@ -1,17 +1,17 @@
 """封装已编译编排图的统一任务执行服务。"""
 
 import asyncio
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator
 from uuid import uuid4
 
 from langgraph.graph.state import CompiledStateGraph
 
 from agent_app.errors import AppError, ErrorCode
+from agent_app.orchestration.registry import ExecutorRegistry
 from agent_app.orchestration.state import AgentState
 from agent_app.schemas.events import EventSequencer, EventType, PendingEvent, TaskEvent
 from agent_app.schemas.tasks import (
     ExecutionInfo,
-    ExecutionMode,
     SelectedMode,
     TaskRequest,
     TaskResponse,
@@ -25,41 +25,38 @@ class TaskService:
         self,
         *,
         graph: CompiledStateGraph,
-        registered_task_types: Collection[str],
+        registry: ExecutorRegistry,
         task_timeout_seconds: float,
     ) -> None:
         """保存编排图、规范化任务名称和正数超时时间。
 
         参数:
             graph: 已编译的顶层编排图。
-            registered_task_types: 可通过工作流执行的任务类型集合。
+            registry: 统一校验 workflow 与 Deep Agent 目标的注册表。
             task_timeout_seconds: 单次任务的最大执行秒数。
 
         异常:
             ValueError: 超时时间不是正数时抛出。
         """
         self._graph = graph
-        self._task_types = frozenset(t.strip().lower() for t in registered_task_types)
+        self._registry = registry
         if task_timeout_seconds <= 0:
             raise ValueError("task_timeout_seconds must be positive")
         self._timeout = task_timeout_seconds
 
     def preflight(self, request: TaskRequest) -> None:
-        """拒绝显式指定但尚未注册任务类型的工作流请求。
+        """拒绝请求中显式填写但尚未注册的 workflow 或 agent 目标。
 
         参数:
             request: 即将执行的任务请求。
 
         异常:
-            AppError: 显式工作流请求指定了未注册的任务类型时抛出。
+            AppError: task_type 或 agent_type 未注册时抛出。
         """
-        if request.execution_mode is ExecutionMode.WORKFLOW:
-            task_type = (request.task_type or "").strip().lower()
-            if task_type not in self._task_types:
-                raise AppError(
-                    ErrorCode.INVALID_TASK_TYPE,
-                    "Unknown task type",
-                )
+        if request.task_type and request.task_type.strip():
+            self._registry.get(request.task_type, mode=SelectedMode.WORKFLOW)
+        if request.agent_type and request.agent_type.strip():
+            self._registry.get(request.agent_type, mode=SelectedMode.DEEP_AGENT)
 
     async def stream(self, request: TaskRequest) -> AsyncIterator[TaskEvent]:
         """确保流中只产生一个开始事件和一个终态事件。
@@ -83,6 +80,7 @@ class TaskService:
             "message": request.message,
             "execution_mode": request.execution_mode.value,
             "requested_task_type": request.task_type,
+            "requested_agent_type": request.agent_type,
             "parameters": request.parameters,
         }
         config = {"configurable": {"thread_id": thread_id}}
@@ -137,13 +135,18 @@ class TaskService:
 
         result = final_values.get("result") or {}
         selected_mode = final_values.get("selected_mode") or SelectedMode.DEEP_AGENT.value
-        selected_task_type = final_values.get("selected_task_type")
+        selected_executor_type = final_values.get("selected_executor_type")
+        task_type = selected_executor_type if selected_mode == SelectedMode.WORKFLOW.value else None
+        agent_type = (
+            selected_executor_type if selected_mode == SelectedMode.DEEP_AGENT.value else None
+        )
         route_reason = final_values.get("route_reason") or ""
         terminal = sequencer.next(
             EventType.TASK_COMPLETED,
             {
                 "selected_mode": selected_mode,
-                "task_type": selected_task_type,
+                "task_type": task_type,
+                "agent_type": agent_type,
                 "route_reason": route_reason,
                 "result": result,
             },
@@ -171,6 +174,7 @@ class TaskService:
                     execution=ExecutionInfo(
                         selected_mode=SelectedMode(data["selected_mode"]),
                         task_type=data.get("task_type"),
+                        agent_type=data.get("agent_type"),
                         route_reason=data.get("route_reason", ""),
                     ),
                     result=data["result"],

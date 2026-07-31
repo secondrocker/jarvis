@@ -10,17 +10,16 @@ from fastapi.responses import JSONResponse
 from agent_app.api.routes.health import router as health_router
 from agent_app.api.routes.tasks import router as tasks_router
 from agent_app.config import Settings, get_settings
-from agent_app.deep_agents.adapter import DeepAgentAdapter
-from agent_app.deep_agents.factory import create_restricted_deep_agent
+from agent_app.deep_agents import create_agents
 from agent_app.errors import AppError, ErrorCode, error_http_status
 from agent_app.infrastructure.checkpoint import create_checkpointer
 from agent_app.infrastructure.llm import create_chat_model
 from agent_app.logging import configure_logging
 from agent_app.orchestration.graph import build_orchestration_graph
-from agent_app.orchestration.registry import WorkflowRegistry
+from agent_app.orchestration.registry import ExecutorRegistry
 from agent_app.orchestration.router import TaskRouter
 from agent_app.services.task_service import TaskService
-from agent_app.workflows.summary.graph import build_summary_graph
+from agent_app.workflows import create_workflows
 
 _SKILL_ROOT = Path(__file__).resolve().parent / "skills"
 
@@ -34,30 +33,27 @@ def build_task_service(settings: Settings) -> TaskService:
     返回值:
         已装配路由、工作流、Deep Agent 和检查点的任务服务。
     """
-    model = create_chat_model(settings)
     checkpointer = create_checkpointer()
 
-    summary_graph = build_summary_graph(model)
-    registry = WorkflowRegistry({"summary": summary_graph})
-    router = TaskRouter(registry=registry, model=model)
-
-    deep_agent_runtime = create_restricted_deep_agent(
-        model=model,
-        checkpointer=checkpointer,
-        skill_root=_SKILL_ROOT,
+    registry = ExecutorRegistry(
+        create_workflows(settings=settings),
+        create_agents(
+            settings=settings,
+            checkpointer=checkpointer,
+            skill_root=_SKILL_ROOT,
+        ),
     )
-    deep_agent = DeepAgentAdapter(runtime=deep_agent_runtime)
+    router = TaskRouter(registry=registry, model=create_chat_model(settings))
 
     graph = build_orchestration_graph(
         router=router,
         registry=registry,
-        deep_agent=deep_agent,
         checkpointer=checkpointer,
     )
 
     return TaskService(
         graph=graph,
-        registered_task_types=registry.names(),
+        registry=registry,
         task_timeout_seconds=settings.task_timeout_seconds,
     )
 

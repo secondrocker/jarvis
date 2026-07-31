@@ -5,6 +5,7 @@ from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
 from agent_app.deep_agents.adapter import DeepAgentAdapter
 from agent_app.errors import AppError, ErrorCode
+from agent_app.orchestration.executors import ExecutionContext
 from agent_app.schemas.events import EventType
 
 
@@ -29,6 +30,16 @@ def _msg_stream(message):
     return ("messages", (message, {}))
 
 
+def _context(*, message="test", emit=lambda _: None):
+    return ExecutionContext(
+        message=message,
+        messages=[HumanMessage(content=message)],
+        parameters={},
+        config={"configurable": {"thread_id": "thread-1"}},
+        emit=emit,
+    )
+
+
 @pytest.mark.asyncio
 async def test_adapter_maps_events_and_returns_answer() -> None:
     chunks = [
@@ -49,12 +60,7 @@ async def test_adapter_maps_events_and_returns_answer() -> None:
     ]
     adapter = DeepAgentAdapter(runtime=_FakeRuntime(chunks))
     emitted = []
-    result = await adapter.run(
-        message="制定发布计划",
-        messages=[],
-        config={"configurable": {"thread_id": "thread-1"}},
-        emit=emitted.append,
-    )
+    result = await adapter.run(_context(message="制定发布计划", emit=emitted.append))
     assert result == {"answer": "发布方案"}
     assert [e.type for e in emitted] == [
         EventType.TOOL_STARTED,
@@ -72,12 +78,7 @@ async def test_adapter_accumulates_multi_chunk_answer() -> None:
         _msg_stream(AIMessageChunk(content="准备")),
     ]
     adapter = DeepAgentAdapter(runtime=_FakeRuntime(chunks))
-    result = await adapter.run(
-        message="test",
-        messages=[],
-        config={},
-        emit=lambda _: None,
-    )
+    result = await adapter.run(_context())
     assert result == {"answer": "第一步：准备"}
 
 
@@ -89,12 +90,7 @@ async def test_adapter_ignores_unknown_events() -> None:
     ]
     adapter = DeepAgentAdapter(runtime=_FakeRuntime(chunks))
     emitted = []
-    result = await adapter.run(
-        message="test",
-        messages=[],
-        config={},
-        emit=emitted.append,
-    )
+    result = await adapter.run(_context(emit=emitted.append))
     assert result == {"answer": "answer"}
     assert [e.type for e in emitted] == [EventType.CONTENT_DELTA]
 
@@ -104,12 +100,7 @@ async def test_adapter_raises_when_no_answer() -> None:
     chunks = [_msg_stream(HumanMessage(content="no ai response"))]
     adapter = DeepAgentAdapter(runtime=_FakeRuntime(chunks))
     with pytest.raises(AppError) as error:
-        await adapter.run(
-            message="test",
-            messages=[],
-            config={},
-            emit=lambda _: None,
-        )
+        await adapter.run(_context())
     assert error.value.code is ErrorCode.EXECUTION_FAILED
     assert error.value.public_message == "Deep Agent returned no answer"
 
@@ -123,11 +114,6 @@ async def test_adapter_maps_runtime_exception_to_execution_failed() -> None:
 
     adapter = DeepAgentAdapter(runtime=_ErroringRuntime())
     with pytest.raises(AppError) as error:
-        await adapter.run(
-            message="test",
-            messages=[],
-            config={},
-            emit=lambda _: None,
-        )
+        await adapter.run(_context())
     assert error.value.code is ErrorCode.EXECUTION_FAILED
     assert error.value.public_message == "Deep Agent execution failed"

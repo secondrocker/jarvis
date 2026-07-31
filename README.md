@@ -13,30 +13,32 @@
                                          ▼
                                     TaskRouter
                                          │
-                           ┌─────────────┴─────────────┐
-                           ▼                           ▼
-                    workflow 节点               deep_agent 节点
-                           │                           │
-                           ▼                           ▼
-                  WorkflowRegistry            DeepAgentAdapter
-                           │                           │
-                           ▼                           ▼
-                       摘要子图              Deep Agent Runtime
-                    （结构化 LLM）            （受限 harness）
+                                         ▼
+                                ExecutorRegistry
+                          （workflow + Deep Agent 目录）
+                                         │
+                                         ▼
+                                    execute 节点
+                              ┌──────────┴──────────┐
+                              ▼                     ▼
+                          摘要子图          Deep Agent Runtime
+                       （结构化 LLM）         （受限 harness）
 ```
 
-`workflow` 与 `deep_agent` 是顶层编排图中的平级执行节点。`TaskRouter` 由
-`select_route` 节点调用并负责选择执行分支；`DeepAgentAdapter` 则是
-`deep_agent` 节点内部使用的运行时适配器。
+workflow 与 Deep Agent 通过统一执行器协议注册到 `ExecutorRegistry`。`TaskRouter`
+根据注册能力选择执行器，顶层图的单一 `execute` 节点负责调用，因此新增执行器时
+不需要修改图结构。
 
 **路由优先级**（从高到低）：
 
-1. 显式指定 `execution_mode=workflow`——必须同时指定已注册的任务类型
-2. 显式指定 `execution_mode=deep_agent`——始终遵循该设置
-3. 请求中包含已注册的 `task_type`
-4. 确定性关键词规则（例如“总结”→ 摘要工作流）
-5. LLM 辅助分类
-6. 意图模糊或无法匹配 → 安全回退到 Deep Agent
+1. 显式指定 `execution_mode` 及目标；workflow 必须提供 `task_type`，Deep Agent 可省略 `agent_type` 并使用默认项
+2. AUTO 请求中包含已注册的 `task_type` 或 `agent_type`
+3. 确定性关键词规则（例如“总结”→ 摘要工作流）
+4. LLM 根据注册表提供的名称、模式和能力描述辅助分类
+5. 意图模糊或模型选择无效 → 安全回退到默认 `solution_planning` agent
+
+`task_type` 与 `agent_type` 互斥。请求显式填写但尚未注册的目标时直接返回 422，
+避免拼写错误被静默路由到其他执行器。
 
 Deep Agent Runtime 受到严格限制：通过 `HarnessProfile` 排除了 `execute`（Shell）和 `task`（子代理调度）工具。它使用 `StateBackend`（进程内虚拟文件系统）和 `solution_planning` 技能运行。
 
@@ -55,6 +57,11 @@ cp .env.example .env          # 然后填入 API 密钥
 # OPENAI_API_KEY=sk-...
 # OPENAI_MODEL=gpt-5.6-sol
 ```
+
+`OPENAI_MODEL` 是路由器及未单独配置执行器时的默认模型。当前可通过
+`SUMMARY_MODEL` 和 `SOLUTION_PLANNING_MODEL` 分别为摘要 workflow 与方案规划
+agent 指定模型；未设置时各自回退到 `OPENAI_MODEL`。新增执行器时应在所属目录
+定义处选择自己的模型配置。
 
 ## 运行
 
@@ -82,7 +89,7 @@ curl -s localhost:8000/api/v1/tasks/invoke \
 # 显式使用 Deep Agent
 curl -s localhost:8000/api/v1/tasks/invoke \
   -H 'Content-Type: application/json' \
-  -d '{"message":"为一个新产品制定分阶段发布方案","execution_mode":"deep_agent"}' | jq .
+  -d '{"message":"为一个新产品制定分阶段发布方案","execution_mode":"deep_agent","agent_type":"solution_planning"}' | jq .
 
 # 显式使用工作流并保持会话连续性
 curl -s localhost:8000/api/v1/tasks/invoke \
@@ -100,6 +107,7 @@ curl -s localhost:8000/api/v1/tasks/invoke \
   "execution": {
     "selected_mode": "workflow",
     "task_type": "summary",
+    "agent_type": null,
     "route_reason": "Summary intent detected"
   },
   "result": { "summary": "...", "key_points": ["..."] }
@@ -125,7 +133,7 @@ task.started → route.selected → node.started → node.completed → task.com
 ## 测试
 
 ```bash
-make test                     # 完整测试套件（104 项测试）
+make test                     # 完整测试套件
 make lint                     # Ruff 检查与格式检查
 make smoke                    # 端到端冒烟脚本（需要有效密钥）
 ```
@@ -140,21 +148,21 @@ src/agent_app/
 │   ├── routes/           健康检查、/invoke、/stream
 │   └── sse.py            SSE 文本格式化
 ├── config.py             应用配置（pydantic-settings）
-├── deep_agents/          受限 Deep Agent 适配器、工厂、事件映射器
+├── deep_agents/          Deep Agent 目录、受限适配器、工厂、事件映射器
 ├── errors.py             AppError、ErrorCode、HTTP 状态映射
 ├── infrastructure/       检查点存储、LLM 工厂
 ├── logging.py            structlog 配置
 ├── main.py               应用工厂与服务装配
-├── orchestration/        顶层 LangGraph 图、路由器、注册表、状态
+├── orchestration/        顶层 LangGraph 图、统一执行器协议、路由器、注册表、状态
 ├── schemas/              任务/事件传输模型、EventSequencer
 ├── services/             TaskService（统一事件源）
 ├── skills/               Deep Agent 技能定义（solution_planning）
-└── workflows/            固定工作流子图（摘要）
+└── workflows/            workflow 目录、统一适配器与固定子图（摘要）
 ```
 
 ## 限制
 
 - **仅使用内存存储**：检查点存储（`MemorySaver`）和 Deep Agent 后端（`StateBackend`）均为进程内实例。进程重启后所有状态都会丢失。
 - **没有身份认证**：接口完全开放，请勿在缺少网关保护的情况下部署。
-- **单一工作流**：目前只注册了 `summary`。新增工作流时，需要构建子图并在 `WorkflowRegistry` 中注册。
+- **当前执行器**：目前提供 `summary` workflow 与默认 `solution_planning` Deep Agent；新增执行器时在所属包的创建函数中登记即可。
 - **Deep Agent 限制**：不能执行 Shell 命令，也不能调度子代理。

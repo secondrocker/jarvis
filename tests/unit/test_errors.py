@@ -23,6 +23,7 @@ def test_error_codes_have_stable_http_mapping() -> None:
         (ErrorCode.VALIDATION_ERROR, 422),
         (ErrorCode.INVALID_PARAMETERS, 422),
         (ErrorCode.INVALID_TASK_TYPE, 422),
+        (ErrorCode.INVALID_AGENT_TYPE, 422),
         (ErrorCode.UPSTREAM_UNAVAILABLE, 503),
         (ErrorCode.EXECUTION_FAILED, 500),
         (ErrorCode.INTERNAL_ERROR, 500),

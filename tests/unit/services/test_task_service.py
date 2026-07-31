@@ -3,9 +3,41 @@
 import pytest
 
 from agent_app.errors import AppError, ErrorCode
+from agent_app.orchestration.executors import ExecutionContext, ExecutorDefinition
+from agent_app.orchestration.registry import ExecutorRegistry
 from agent_app.schemas.events import EventType
-from agent_app.schemas.tasks import ExecutionMode, TaskRequest
+from agent_app.schemas.tasks import ExecutionMode, SelectedMode, TaskRequest
 from agent_app.services.task_service import TaskService
+
+
+class _FakeExecutor:
+    async def run(self, context: ExecutionContext):
+        return {"message": context.message}
+
+
+def _registry() -> ExecutorRegistry:
+    return ExecutorRegistry(
+        {
+            "summary": ExecutorDefinition(
+                mode=SelectedMode.WORKFLOW,
+                description="summary",
+                executor=_FakeExecutor(),
+            )
+        },
+        {
+            "solution_planning": ExecutorDefinition(
+                mode=SelectedMode.DEEP_AGENT,
+                description="planning",
+                executor=_FakeExecutor(),
+                is_default=True,
+            ),
+            "research": ExecutorDefinition(
+                mode=SelectedMode.DEEP_AGENT,
+                description="research",
+                executor=_FakeExecutor(),
+            ),
+        },
+    )
 
 
 class _FakeSuccessGraph:
@@ -15,7 +47,11 @@ class _FakeSuccessGraph:
         yield {
             "pending_event": {
                 "type": "route.selected",
-                "data": {"selected_mode": "workflow", "task_type": "summary"},
+                "data": {
+                    "selected_mode": "workflow",
+                    "task_type": "summary",
+                    "agent_type": None,
+                },
             }
         }
         yield {
@@ -32,7 +68,7 @@ class _FakeSuccessGraph:
         }
         yield {
             "selected_mode": "workflow",
-            "selected_task_type": "summary",
+            "selected_executor_type": "summary",
             "route_reason": "Summary intent detected",
             "result": {"summary": "测试摘要", "key_points": ["A"]},
         }
@@ -47,7 +83,7 @@ def fake_success_graph():
 async def test_stream_wraps_graph_events_with_monotonic_sequence(fake_success_graph) -> None:
     service = TaskService(
         graph=fake_success_graph,
-        registered_task_types={"summary"},
+        registry=_registry(),
         task_timeout_seconds=5,
     )
     events = [event async for event in service.stream(TaskRequest(message="总结"))]
@@ -65,7 +101,7 @@ async def test_stream_wraps_graph_events_with_monotonic_sequence(fake_success_gr
 async def test_invoke_consumes_the_same_stream(fake_success_graph) -> None:
     service = TaskService(
         graph=fake_success_graph,
-        registered_task_types={"summary"},
+        registry=_registry(),
         task_timeout_seconds=5,
     )
     response = await service.invoke(TaskRequest(message="总结"))
@@ -79,7 +115,7 @@ async def test_invoke_consumes_the_same_stream(fake_success_graph) -> None:
 async def test_stream_generates_thread_id_when_missing(fake_success_graph) -> None:
     service = TaskService(
         graph=fake_success_graph,
-        registered_task_types={"summary"},
+        registry=_registry(),
         task_timeout_seconds=5,
     )
     events = [event async for event in service.stream(TaskRequest(message="总结"))]
@@ -91,7 +127,7 @@ async def test_stream_generates_thread_id_when_missing(fake_success_graph) -> No
 async def test_stream_preserves_caller_thread_id(fake_success_graph) -> None:
     service = TaskService(
         graph=fake_success_graph,
-        registered_task_types={"summary"},
+        registry=_registry(),
         task_timeout_seconds=5,
     )
     events = [
@@ -103,7 +139,7 @@ async def test_stream_preserves_caller_thread_id(fake_success_graph) -> None:
 def test_preflight_rejects_unregistered_workflow_task_type() -> None:
     service = TaskService(
         graph=_FakeSuccessGraph(),
-        registered_task_types={"summary"},
+        registry=_registry(),
         task_timeout_seconds=5,
     )
     with pytest.raises(AppError) as error:
@@ -116,21 +152,40 @@ def test_preflight_rejects_unregistered_workflow_task_type() -> None:
 def test_preflight_allows_auto_without_task_type() -> None:
     service = TaskService(
         graph=_FakeSuccessGraph(),
-        registered_task_types={"summary"},
+        registry=_registry(),
         task_timeout_seconds=5,
     )
     service.preflight(TaskRequest(message="x"))
 
 
-def test_preflight_allows_deep_agent_without_registered_task_type() -> None:
+def test_preflight_allows_default_and_registered_deep_agents() -> None:
     service = TaskService(
         graph=_FakeSuccessGraph(),
-        registered_task_types={"summary"},
+        registry=_registry(),
         task_timeout_seconds=5,
     )
-    service.preflight(
-        TaskRequest(message="x", execution_mode=ExecutionMode.DEEP_AGENT, task_type="unknown")
+    service.preflight(TaskRequest(message="x", execution_mode=ExecutionMode.DEEP_AGENT))
+    service.preflight(TaskRequest(message="x", agent_type="research"))
+
+
+@pytest.mark.parametrize(
+    ("task_request", "code"),
+    [
+        (TaskRequest(message="x", task_type="missing"), ErrorCode.INVALID_TASK_TYPE),
+        (TaskRequest(message="x", agent_type="missing"), ErrorCode.INVALID_AGENT_TYPE),
+    ],
+)
+def test_preflight_rejects_unknown_auto_target(task_request, code) -> None:
+    service = TaskService(
+        graph=_FakeSuccessGraph(),
+        registry=_registry(),
+        task_timeout_seconds=5,
     )
+
+    with pytest.raises(AppError) as error:
+        service.preflight(task_request)
+
+    assert error.value.code is code
 
 
 @pytest.mark.asyncio
@@ -141,7 +196,7 @@ async def test_stream_maps_error_state_to_task_failed() -> None:
 
     service = TaskService(
         graph=_ErrorGraph(),
-        registered_task_types={"summary"},
+        registry=_registry(),
         task_timeout_seconds=5,
     )
     events = [event async for event in service.stream(TaskRequest(message="x"))]
@@ -158,7 +213,7 @@ async def test_stream_sanitizes_unknown_exceptions() -> None:
 
     service = TaskService(
         graph=_CrashGraph(),
-        registered_task_types={"summary"},
+        registry=_registry(),
         task_timeout_seconds=5,
     )
     events = [event async for event in service.stream(TaskRequest(message="x"))]
@@ -175,7 +230,7 @@ async def test_invoke_raises_app_error_on_failed_task() -> None:
 
     service = TaskService(
         graph=_ErrorGraph(),
-        registered_task_types={"summary"},
+        registry=_registry(),
         task_timeout_seconds=5,
     )
     with pytest.raises(AppError) as error:
@@ -188,7 +243,7 @@ async def test_invoke_raises_app_error_on_failed_task() -> None:
 async def test_stream_emits_exactly_one_terminal_event(fake_success_graph) -> None:
     service = TaskService(
         graph=fake_success_graph,
-        registered_task_types={"summary"},
+        registry=_registry(),
         task_timeout_seconds=5,
     )
     events = [event async for event in service.stream(TaskRequest(message="总结"))]

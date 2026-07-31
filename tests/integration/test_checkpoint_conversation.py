@@ -2,15 +2,16 @@
 
 import pytest
 
-from agent_app.deep_agents.adapter import DeepAgentAdapter
 from agent_app.infrastructure.checkpoint import create_checkpointer
+from agent_app.orchestration.executors import ExecutionContext, ExecutorDefinition
 from agent_app.orchestration.graph import build_orchestration_graph
-from agent_app.orchestration.registry import WorkflowRegistry
+from agent_app.orchestration.registry import ExecutorRegistry
 from agent_app.orchestration.router import TaskRouter
+from agent_app.schemas.tasks import SelectedMode
 
 
-class _FakeWorkflow:
-    async def ainvoke(self, input, config=None):
+class _FakeExecutor:
+    async def run(self, context: ExecutionContext):
         return {"summary": "ok", "key_points": []}
 
 
@@ -24,14 +25,27 @@ class _FakeRouterModel:
 
 
 def _graph():
-    router = TaskRouter(
-        registry=WorkflowRegistry({"summary": _FakeWorkflow()}),
-        model=_FakeRouterModel(),
+    registry = ExecutorRegistry(
+        {
+            "summary": ExecutorDefinition(
+                mode=SelectedMode.WORKFLOW,
+                description="summary",
+                executor=_FakeExecutor(),
+            )
+        },
+        {
+            "solution_planning": ExecutorDefinition(
+                mode=SelectedMode.DEEP_AGENT,
+                description="planning",
+                executor=_FakeExecutor(),
+                is_default=True,
+            )
+        },
     )
+    router = TaskRouter(registry=registry, model=_FakeRouterModel())
     return build_orchestration_graph(
         router=router,
-        registry=WorkflowRegistry({"summary": _FakeWorkflow()}),
-        deep_agent=DeepAgentAdapter(runtime=None),
+        registry=registry,
         checkpointer=create_checkpointer(),
     )
 
@@ -47,6 +61,7 @@ async def test_same_thread_accumulates_messages_across_turns() -> None:
             "message": "总结第一段",
             "execution_mode": "auto",
             "requested_task_type": None,
+            "requested_agent_type": None,
             "parameters": {},
         },
         config,
@@ -59,6 +74,7 @@ async def test_same_thread_accumulates_messages_across_turns() -> None:
             "message": "总结第二段",
             "execution_mode": "auto",
             "requested_task_type": None,
+            "requested_agent_type": None,
             "parameters": {},
         },
         config,
@@ -80,6 +96,7 @@ async def test_different_threads_are_isolated() -> None:
             "message": "总结",
             "execution_mode": "auto",
             "requested_task_type": None,
+            "requested_agent_type": None,
             "parameters": {},
         },
         {"configurable": {"thread_id": "thread-a"}},
@@ -91,6 +108,7 @@ async def test_different_threads_are_isolated() -> None:
             "message": "总结",
             "execution_mode": "auto",
             "requested_task_type": None,
+            "requested_agent_type": None,
             "parameters": {},
         },
         {"configurable": {"thread_id": "thread-b"}},

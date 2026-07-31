@@ -109,20 +109,30 @@ class FakeTaskService:
             self._EventType.TASK_COMPLETED,
         ):
             seq += 1
+            is_agent = request.execution_mode is self._ExecutionMode.DEEP_AGENT
+            selected_mode = "deep_agent" if is_agent else "workflow"
+            task_type = None if is_agent else request.task_type
+            agent_type = (request.agent_type or "solution_planning") if is_agent else None
             data = (
                 {"message": "fake"}
                 if etype == self._EventType.TASK_STARTED
                 else {
-                    "selected_mode": "workflow",
-                    "task_type": request.task_type,
+                    "selected_mode": selected_mode,
+                    "task_type": task_type,
+                    "agent_type": agent_type,
                 }
             )
             if etype == self._EventType.TASK_COMPLETED:
                 data = {
-                    "selected_mode": "workflow",
-                    "task_type": request.task_type,
-                    "route_reason": "explicit workflow",
-                    "result": {"summary": "fake", "key_points": []},
+                    "selected_mode": selected_mode,
+                    "task_type": task_type,
+                    "agent_type": agent_type,
+                    "route_reason": "explicit deep agent" if is_agent else "explicit workflow",
+                    "result": (
+                        {"answer": "fake plan"}
+                        if is_agent
+                        else {"summary": "fake", "key_points": []}
+                    ),
                 }
             yield self._TaskEvent(
                 type=etype,
@@ -145,14 +155,20 @@ class FakeTaskService:
         self.invoke_calls.append(request)
         if self._fail_with is not None:
             raise self._fail_with
+        is_agent = request.execution_mode is self._ExecutionMode.DEEP_AGENT
         return self._TaskResponse(
             task_id="fake-task",
             thread_id=request.thread_id or "fake-thread",
             status=self._TaskStatus.COMPLETED,
             execution=self._ExecutionInfo(
-                selected_mode=self._SelectedMode.WORKFLOW,
-                task_type=request.task_type,
-                route_reason="explicit workflow",
+                selected_mode=(
+                    self._SelectedMode.DEEP_AGENT if is_agent else self._SelectedMode.WORKFLOW
+                ),
+                task_type=None if is_agent else request.task_type,
+                agent_type=(request.agent_type or "solution_planning") if is_agent else None,
+                route_reason="explicit deep agent" if is_agent else "explicit workflow",
             ),
-            result={"summary": "测试摘要", "key_points": ["A"]},
+            result=(
+                {"answer": "测试方案"} if is_agent else {"summary": "测试摘要", "key_points": ["A"]}
+            ),
         )

@@ -1,270 +1,233 @@
-"""TaskRouter 优先级与 LLM 辅助路由的单元测试。"""
+"""TaskRouter 的统一 workflow/agent 路由测试。"""
+
+from typing import Any
 
 import httpx
 import pytest
 from openai import APITimeoutError
 
 from agent_app.errors import AppError, ErrorCode
+from agent_app.orchestration.executors import ExecutionContext, ExecutorDefinition
+from agent_app.orchestration.registry import ExecutorRegistry
 from agent_app.orchestration.router import TaskRouter
+from agent_app.orchestration.schemas import LLMRouteDecision
 from agent_app.schemas.tasks import ExecutionMode, SelectedMode, TaskRequest
 
 
-class _FakeRoutingRunnable:
-    """返回受控 LLMRouteDecision 的异步可运行对象。"""
+class _FakeExecutor:
+    async def run(self, context: ExecutionContext) -> dict[str, Any]:
+        return {"message": context.message}
 
+
+class _FakeRoutingRunnable:
     def __init__(self, decision, error=None):
         self.decision = decision
         self.error = error
+        self.inputs = []
 
     async def ainvoke(self, input_value):
+        self.inputs.append(input_value)
         if self.error is not None:
             raise self.error
         return self.decision
 
 
 class _FakeRouterModel:
-    """记录调用并返回已绑定可运行对象的 LangChain 兼容替身。"""
-
     def __init__(self, decision, error=None):
         self.calls = []
-        self._decision = decision
-        self._error = error
-        self._schema = None
         self.runnable = _FakeRoutingRunnable(decision, error)
 
     def with_structured_output(self, schema):
         self.calls.append(schema)
-        self._schema = schema
         return self.runnable
 
 
-def _registry():
-    """构建只包含摘要工作流的注册表。"""
-    from agent_app.orchestration.registry import WorkflowRegistry
+def _definition(
+    mode: SelectedMode,
+    description: str,
+    *,
+    is_default: bool = False,
+) -> ExecutorDefinition:
+    return ExecutorDefinition(
+        mode=mode,
+        description=description,
+        executor=_FakeExecutor(),
+        is_default=is_default,
+    )
 
-    class _FakeWorkflow:
-        async def ainvoke(self, input, config=None):
-            return {"summary": "ok"}
 
-    return WorkflowRegistry({"summary": _FakeWorkflow()})
+def _registry() -> ExecutorRegistry:
+    return ExecutorRegistry(
+        {"summary": _definition(SelectedMode.WORKFLOW, "Structured text summary")},
+        {
+            "solution_planning": _definition(
+                SelectedMode.DEEP_AGENT,
+                "Implementation and delivery planning",
+                is_default=True,
+            ),
+            "research": _definition(
+                SelectedMode.DEEP_AGENT,
+                "Evidence-based research",
+            ),
+        },
+    )
 
 
-# ---- 显式执行模式测试 ----
+def _llm_decision(
+    mode: SelectedMode,
+    executor_type: str | None,
+    *,
+    ambiguous: bool = False,
+) -> LLMRouteDecision:
+    return LLMRouteDecision(
+        selected_mode=mode,
+        executor_type=executor_type,
+        is_ambiguous=ambiguous,
+        reason="model decision",
+    )
 
 
 @pytest.mark.asyncio
-async def test_explicit_workflow_requires_registered_task_type() -> None:
-    from agent_app.orchestration.schemas import LLMRouteDecision
-
-    model = _FakeRouterModel(
-        LLMRouteDecision(
-            selected_mode=SelectedMode.WORKFLOW,
-            task_type="summary",
-            is_ambiguous=False,
-            reason="test",
+async def test_explicit_workflow_routes_without_llm() -> None:
+    model = _FakeRouterModel(None)
+    result = await TaskRouter(registry=_registry(), model=model).route(
+        TaskRequest(
+            message="do it",
+            execution_mode=ExecutionMode.WORKFLOW,
+            task_type=" Summary ",
         )
     )
-    router = TaskRouter(registry=_registry(), model=model)
 
-    with pytest.raises(AppError) as caught:
-        await router.route(
-            TaskRequest(
-                message="do it",
-                execution_mode=ExecutionMode.WORKFLOW,
-                task_type="translate",
-            )
-        )
-    assert caught.value.code is ErrorCode.INVALID_TASK_TYPE
-
-
-@pytest.mark.asyncio
-async def test_explicit_workflow_with_registered_task_type_no_llm() -> None:
-    from agent_app.orchestration.schemas import LLMRouteDecision
-
-    model = _FakeRouterModel(
-        LLMRouteDecision(
-            selected_mode=SelectedMode.WORKFLOW,
-            task_type="summary",
-            is_ambiguous=False,
-            reason="test",
-        )
-    )
-    router = TaskRouter(registry=_registry(), model=model)
-    result = await router.route(
-        TaskRequest(message="do it", execution_mode=ExecutionMode.WORKFLOW, task_type="summary")
-    )
     assert result.selected_mode is SelectedMode.WORKFLOW
-    assert result.task_type == "summary"
+    assert result.executor_type == "summary"
     assert model.calls == []
 
 
 @pytest.mark.asyncio
-async def test_explicit_deep_agent_ignores_task_type_no_llm() -> None:
-    from agent_app.orchestration.schemas import LLMRouteDecision
-
-    model = _FakeRouterModel(
-        LLMRouteDecision(
-            selected_mode=SelectedMode.DEEP_AGENT,
-            task_type=None,
-            is_ambiguous=False,
-            reason="test",
+async def test_explicit_deep_agent_uses_named_agent_without_llm() -> None:
+    model = _FakeRouterModel(None)
+    result = await TaskRouter(registry=_registry(), model=model).route(
+        TaskRequest(
+            message="research it",
+            execution_mode=ExecutionMode.DEEP_AGENT,
+            agent_type=" Research ",
         )
     )
-    router = TaskRouter(registry=_registry(), model=model)
-    result = await router.route(
-        TaskRequest(message="plan", execution_mode=ExecutionMode.DEEP_AGENT, task_type="summary")
-    )
+
     assert result.selected_mode is SelectedMode.DEEP_AGENT
-    assert result.task_type is None
-    assert model.calls == []
-
-
-# ---- 注册表与确定性规则测试 ----
-
-
-@pytest.mark.asyncio
-async def test_registered_task_type_wins_without_llm() -> None:
-    from agent_app.orchestration.schemas import LLMRouteDecision
-
-    model = _FakeRouterModel(
-        LLMRouteDecision(
-            selected_mode=SelectedMode.DEEP_AGENT,
-            task_type=None,
-            is_ambiguous=True,
-            reason="should not be called",
-        )
-    )
-    router = TaskRouter(registry=_registry(), model=model)
-    result = await router.route(TaskRequest(message="text", task_type="summary"))
-    assert result.selected_mode is SelectedMode.WORKFLOW
-    assert result.task_type == "summary"
-    assert model.calls == []
-
-
-@pytest.mark.parametrize("phrase", ["总结", "摘要", "概括", "summarize", "summary", "SUMMARY"])
-@pytest.mark.asyncio
-async def test_deterministic_summary_phrases_route_without_llm(phrase) -> None:
-    from agent_app.orchestration.schemas import LLMRouteDecision
-
-    model = _FakeRouterModel(
-        LLMRouteDecision(
-            selected_mode=SelectedMode.DEEP_AGENT,
-            task_type=None,
-            is_ambiguous=True,
-            reason="should not be called",
-        )
-    )
-    router = TaskRouter(registry=_registry(), model=model)
-    result = await router.route(TaskRequest(message=f"请帮我{phrase}这段文字"))
-    assert result.selected_mode is SelectedMode.WORKFLOW
-    assert result.task_type == "summary"
+    assert result.executor_type == "research"
     assert model.calls == []
 
 
 @pytest.mark.asyncio
-async def test_broad_word_does_not_trigger_deterministic_rule() -> None:
-    from agent_app.orchestration.schemas import LLMRouteDecision
-
-    model = _FakeRouterModel(
-        LLMRouteDecision(
-            selected_mode=SelectedMode.DEEP_AGENT,
-            task_type=None,
-            is_ambiguous=False,
-            reason="open-ended analysis request",
-        )
+async def test_explicit_deep_agent_without_name_uses_default() -> None:
+    result = await TaskRouter(registry=_registry(), model=_FakeRouterModel(None)).route(
+        TaskRequest(message="plan", execution_mode=ExecutionMode.DEEP_AGENT)
     )
-    router = TaskRouter(registry=_registry(), model=model)
-    result = await router.route(TaskRequest(message="请分析这段数据"))
+
     assert result.selected_mode is SelectedMode.DEEP_AGENT
-    assert len(model.calls) == 1
-
-
-# ---- LLM 回退测试 ----
+    assert result.executor_type == "solution_planning"
 
 
 @pytest.mark.asyncio
-async def test_llm_selects_workflow_with_registered_type() -> None:
-    from agent_app.orchestration.schemas import LLMRouteDecision
-
-    model = _FakeRouterModel(
-        LLMRouteDecision(
-            selected_mode=SelectedMode.WORKFLOW,
-            task_type="summary",
-            is_ambiguous=False,
-            reason="clear summary intent",
-        )
-    )
+async def test_auto_named_targets_are_validated_and_route_without_llm() -> None:
+    model = _FakeRouterModel(None)
     router = TaskRouter(registry=_registry(), model=model)
-    result = await router.route(TaskRequest(message="condense the passage"))
+
+    workflow = await router.route(TaskRequest(message="x", task_type="summary"))
+    agent = await router.route(TaskRequest(message="x", agent_type="research"))
+
+    assert workflow.executor_type == "summary"
+    assert agent.executor_type == "research"
+    assert model.calls == []
+
+
+@pytest.mark.parametrize(
+    ("task_request", "code"),
+    [
+        (TaskRequest(message="x", task_type="missing"), ErrorCode.INVALID_TASK_TYPE),
+        (TaskRequest(message="x", agent_type="missing"), ErrorCode.INVALID_AGENT_TYPE),
+    ],
+)
+@pytest.mark.asyncio
+async def test_auto_unknown_named_target_is_rejected(task_request, code) -> None:
+    with pytest.raises(AppError) as error:
+        await TaskRouter(registry=_registry(), model=_FakeRouterModel(None)).route(task_request)
+
+    assert error.value.code is code
+
+
+@pytest.mark.asyncio
+async def test_summary_phrase_routes_without_llm() -> None:
+    model = _FakeRouterModel(None)
+    result = await TaskRouter(registry=_registry(), model=model).route(
+        TaskRequest(message="请总结这段文字")
+    )
+
     assert result.selected_mode is SelectedMode.WORKFLOW
-    assert result.task_type == "summary"
-    assert result.reason == "clear summary intent"
-    assert len(model.calls) == 1
+    assert result.executor_type == "summary"
+    assert model.calls == []
 
 
+@pytest.mark.parametrize(
+    ("decision", "expected_mode", "expected_type"),
+    [
+        (
+            _llm_decision(SelectedMode.WORKFLOW, "summary"),
+            SelectedMode.WORKFLOW,
+            "summary",
+        ),
+        (
+            _llm_decision(SelectedMode.DEEP_AGENT, "research"),
+            SelectedMode.DEEP_AGENT,
+            "research",
+        ),
+        (
+            _llm_decision(SelectedMode.WORKFLOW, "missing"),
+            SelectedMode.DEEP_AGENT,
+            "solution_planning",
+        ),
+        (
+            _llm_decision(SelectedMode.DEEP_AGENT, None, ambiguous=True),
+            SelectedMode.DEEP_AGENT,
+            "solution_planning",
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_llm_selects_workflow_with_unregistered_type_falls_back() -> None:
-    from agent_app.orchestration.schemas import LLMRouteDecision
-
-    model = _FakeRouterModel(
-        LLMRouteDecision(
-            selected_mode=SelectedMode.WORKFLOW,
-            task_type="translate",
-            is_ambiguous=False,
-            reason="translation request",
-        )
+async def test_llm_selection_and_safe_fallback(decision, expected_mode, expected_type) -> None:
+    model = _FakeRouterModel(decision)
+    result = await TaskRouter(registry=_registry(), model=model).route(
+        TaskRequest(message="analyze this request")
     )
-    router = TaskRouter(registry=_registry(), model=model)
-    result = await router.route(TaskRequest(message="translate this"))
-    assert result.selected_mode is SelectedMode.DEEP_AGENT
-    assert result.task_type is None
-    assert "translate" not in result.reason
+
+    assert result.selected_mode is expected_mode
+    assert result.executor_type == expected_type
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_llm_decision_falls_back_to_deep_agent() -> None:
-    from agent_app.orchestration.schemas import LLMRouteDecision
+async def test_llm_prompt_lists_registered_capability_descriptions() -> None:
+    model = _FakeRouterModel(_llm_decision(SelectedMode.DEEP_AGENT, "research"))
+    await TaskRouter(registry=_registry(), model=model).route(TaskRequest(message="investigate"))
 
-    model = _FakeRouterModel(
-        LLMRouteDecision(
-            selected_mode=SelectedMode.DEEP_AGENT,
-            task_type=None,
-            is_ambiguous=True,
-            reason="unclear intent",
-        )
+    prompt_text = "\n".join(
+        str(message.content) for message in model.runnable.inputs[0].to_messages()
     )
-    router = TaskRouter(registry=_registry(), model=model)
-    result = await router.route(TaskRequest(message="帮我想想下一步"))
-    assert result.selected_mode is SelectedMode.DEEP_AGENT
-    assert result.task_type is None
+    assert "summary [workflow]: Structured text summary" in prompt_text
+    assert "research [deep_agent]: Evidence-based research" in prompt_text
+    assert "solution_planning [deep_agent]: Implementation and delivery planning" in prompt_text
 
 
 @pytest.mark.asyncio
-async def test_llm_timeout_becomes_upstream_unavailable_not_ambiguous() -> None:
+async def test_llm_timeout_becomes_upstream_unavailable() -> None:
     model = _FakeRouterModel(
         decision=None,
         error=APITimeoutError(request=httpx.Request("POST", "https://api.openai.com/v1/responses")),
     )
-    router = TaskRouter(registry=_registry(), model=model)
+
     with pytest.raises(AppError) as error:
-        await router.route(TaskRequest(message="do something"))
-    assert error.value.code is ErrorCode.UPSTREAM_UNAVAILABLE
-
-
-@pytest.mark.asyncio
-async def test_task_type_is_normalized_before_registry_lookup() -> None:
-    from agent_app.orchestration.schemas import LLMRouteDecision
-
-    model = _FakeRouterModel(
-        LLMRouteDecision(
-            selected_mode=SelectedMode.DEEP_AGENT,
-            task_type=None,
-            is_ambiguous=True,
-            reason="test",
+        await TaskRouter(registry=_registry(), model=model).route(
+            TaskRequest(message="do something")
         )
-    )
-    router = TaskRouter(registry=_registry(), model=model)
-    result = await router.route(TaskRequest(message="text", task_type="  Summary  "))
-    assert result.selected_mode is SelectedMode.WORKFLOW
-    assert result.task_type == "summary"
-    assert model.calls == []
+
+    assert error.value.code is ErrorCode.UPSTREAM_UNAVAILABLE

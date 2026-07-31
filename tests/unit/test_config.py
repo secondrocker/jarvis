@@ -28,3 +28,18 @@ def test_settings_apply_demo_timeout_defaults() -> None:
     assert settings.llm_max_retries == 2
     assert settings.task_timeout_seconds == 300.0
     assert settings.log_level == "INFO"
+    assert settings.summary_model is None
+    assert settings.solution_planning_model is None
+
+
+def test_settings_allow_executor_specific_models() -> None:
+    settings = Settings(
+        openai_api_key="test-key",
+        openai_model="default-model",
+        summary_model="summary-model",
+        solution_planning_model="planning-model",
+        _env_file=None,
+    )
+
+    assert settings.summary_model == "summary-model"
+    assert settings.solution_planning_model == "planning-model"
