@@ -22,9 +22,10 @@ def _context(*, max_words: int = 100) -> ExecutionContext:
 
 
 @pytest.mark.asyncio
-async def test_create_workflows_returns_routable_summary_executor(
+async def test_create_workflows_returns_routable_executors(
     fake_summary_model,
     monkeypatch,
+    tmp_path,
 ) -> None:
     selected_models = []
 
@@ -35,17 +36,28 @@ async def test_create_workflows_returns_routable_summary_executor(
     monkeypatch.setattr(workflows_mod, "create_chat_model", fake_create_chat_model)
 
     workflows = create_workflows(
-        settings=SimpleNamespace(summary_model="summary-specialized-model")
+        settings=SimpleNamespace(
+            summary_model="summary-specialized-model",
+            pdf_image_output_dir=str(tmp_path),
+        )
     )
 
-    assert set(workflows) == {"summary"}
-    definition = workflows["summary"]
-    assert definition.mode is SelectedMode.WORKFLOW
-    assert definition.description
-    assert definition.is_default is False
+    assert set(workflows) == {"summary", "pdf_to_image"}
+
+    summary = workflows["summary"]
+    assert summary.mode is SelectedMode.WORKFLOW
+    assert summary.description
+    assert summary.is_default is False
+
+    pdf = workflows["pdf_to_image"]
+    assert pdf.mode is SelectedMode.WORKFLOW
+    assert pdf.description
+    assert pdf.is_default is False
+
+    # PDF 执行器不需要模型：模型仅按摘要专用配置创建一次。
     assert selected_models == ["summary-specialized-model"]
 
-    result = await definition.executor.run(_context())
+    result = await summary.executor.run(_context())
 
     assert result == {"summary": "测试摘要", "key_points": ["Alpha", "Beta"]}
     prompt = fake_summary_model.runnable.inputs[0]
@@ -58,13 +70,16 @@ async def test_create_workflows_returns_routable_summary_executor(
 async def test_summary_executor_maps_invalid_parameters_to_app_error(
     fake_summary_model,
     monkeypatch,
+    tmp_path,
 ) -> None:
     monkeypatch.setattr(
         workflows_mod,
         "create_chat_model",
         lambda settings, *, model_name=None: fake_summary_model,
     )
-    definition = create_workflows(settings=SimpleNamespace(summary_model=None))["summary"]
+    definition = create_workflows(
+        settings=SimpleNamespace(summary_model=None, pdf_image_output_dir=str(tmp_path))
+    )["summary"]
 
     with pytest.raises(AppError) as error:
         await definition.executor.run(_context(max_words=10))

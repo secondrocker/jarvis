@@ -3,20 +3,23 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-demo"
+name = "jarvis"
 version = "0.1.0"
 description = "A FastAPI, LangGraph, and Deep Agents demonstration service."
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "deepagents",
     "fastapi",
+    "httpx",
     "langchain",
     "langchain-openai",
     "langgraph",
+    "pymupdf",
     "pydantic-settings",
     "sse-starlette",
     "structlog",
     "uvicorn[standard]",
+    "fastapi-offline>=1.7.7",
 ]
 
 [dependency-groups]

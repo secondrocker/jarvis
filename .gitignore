@@ -16,3 +16,4 @@ htmlcov/
 .vscode/
 .worktrees/
 .codegraph/
+.data/

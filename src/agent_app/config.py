@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     task_timeout_seconds: float = Field(default=300.0, gt=0)
     log_level: str = "INFO"
+    pdf_image_output_dir: str = ".data/pdf_images"
 
 
 @lru_cache(maxsize=1)

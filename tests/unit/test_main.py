@@ -1,5 +1,7 @@
 """应用装配入口测试。"""
 
+from fastapi.testclient import TestClient
+
 from agent_app import main as main_mod
 from agent_app import workflows as workflows_mod
 from agent_app.config import Settings
@@ -48,3 +50,20 @@ def test_build_task_service_selects_models_at_each_definition(
         "summary": "summary-specialized-model",
         "solution_planning": "planning-specialized-model",
     }
+
+
+def test_app_serves_pdf_static_files(tmp_path) -> None:
+    settings = Settings(
+        openai_api_key="test-key",
+        openai_model="test-model",
+        pdf_image_output_dir=str(tmp_path),
+        _env_file=None,
+    )
+    (tmp_path / "page_1.png").write_bytes(b"fake-image-bytes")
+
+    app = main_mod.create_app(settings=settings, service=object())
+    with TestClient(app) as client:
+        response = client.get("/static/pdf_images/page_1.png")
+
+    assert response.status_code == 200
+    assert response.content == b"fake-image-bytes"

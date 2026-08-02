@@ -9,7 +9,7 @@ from agent_app.schemas.tasks import TaskRequest, TaskResponse
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
 
-@router.post("/invoke", response_model=TaskResponse)
+@router.post("/invoke", response_model=TaskResponse, summary="同步执行任务")
 async def invoke_task(
     task: TaskRequest,
     service: TaskServiceDep,
@@ -26,7 +26,7 @@ async def invoke_task(
     return await service.invoke(task)
 
 
-@router.post("/stream")
+@router.post("/stream", summary="流式执行任务（SSE）")
 async def stream_task(
     task: TaskRequest,
     service: TaskServiceDep,

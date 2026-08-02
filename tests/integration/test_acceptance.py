@@ -1,8 +1,11 @@
 """使用完整装配图和测试替身的端到端验收测试。"""
 
+import base64
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pymupdf
 import pytest
 
 from agent_app.deep_agents.adapter import DeepAgentAdapter
@@ -72,7 +75,12 @@ def _build_service(checkpointer=None) -> TaskService:
 
     deep_agent = DeepAgentAdapter(runtime=_FakeDeepAgentRuntime())
     with patch("agent_app.workflows.create_chat_model", return_value=summary_model):
-        workflows = create_workflows(settings=SimpleNamespace(summary_model="summary-test-model"))
+        workflows = create_workflows(
+            settings=SimpleNamespace(
+                summary_model="summary-test-model",
+                pdf_image_output_dir=tempfile.mkdtemp(),
+            )
+        )
     registry = ExecutorRegistry(
         workflows,
         {
@@ -214,3 +222,28 @@ async def test_explicit_unregistered_workflow_raises(monkeypatch) -> None:
             )
         )
     assert error.value.code is ErrorCode.INVALID_TASK_TYPE
+
+
+@pytest.mark.asyncio
+async def test_explicit_pdf_workflow_renders_default_page() -> None:
+    service = _build_service()
+    document = pymupdf.open()
+    document.new_page().insert_text((72, 72), "Page 1")
+    document.new_page().insert_text((72, 72), "Page 2")
+    pdf_base64 = base64.b64encode(document.tobytes()).decode()
+    document.close()
+
+    response = await service.invoke(
+        TaskRequest(
+            message="render via base64",
+            execution_mode=ExecutionMode.WORKFLOW,
+            task_type="pdf_to_image",
+            parameters={"pdf_base64": pdf_base64},
+        )
+    )
+
+    assert response.execution.selected_mode is SelectedMode.WORKFLOW
+    assert response.execution.task_type == "pdf_to_image"
+    assert response.result["page_count"] == 2
+    assert response.result["images"]
+    assert response.result["images"][0]["url"].startswith("/static/pdf_images/")

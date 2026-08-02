@@ -5,7 +5,7 @@ from fastapi import APIRouter
 router = APIRouter()
 
 
-@router.get("/health")
+@router.get("/health", summary="健康检查")
 async def health() -> dict[str, str]:
     """不调用任务服务或 OpenAI，直接返回健康状态。
 
