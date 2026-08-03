@@ -1,60 +1,12 @@
-"""用 PyMuPDF 把 PDF 页面渲染为图片文件的节点。"""
+"""把 PDF 渲染为图片文件的 LangGraph 节点（复用 tools 的 PDF tool 进程内实现）。"""
 
-import base64
-import binascii
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
-import httpx
-import pymupdf
-
-from agent_app.errors import AppError, ErrorCode
-from agent_app.workflows.pdf_to_image.pages import resolve_pages
+from agent_app.tools.pdf.persist import STATIC_URL_PREFIX
+from agent_app.tools.pdf.tool import render_pdf_to_image
 from agent_app.workflows.pdf_to_image.schemas import PdfState
-
-# 下载远程 PDF 的最大等待秒数。
-PDF_DOWNLOAD_TIMEOUT = 30.0
-
-# 对外暴露渲染图片的静态文件 URL 前缀，需与 main.py 中的挂载点保持一致。
-STATIC_URL_PREFIX = "/static/pdf_images"
-
-
-def _load_pdf_bytes(source: str | None, pdf_base64: str | None) -> bytes:
-    """根据来源加载 PDF 原始字节；失败时抛出安全的 INVALID_PARAMETERS。
-
-    参数:
-        source: 可下载的 PDF URL，可为 None。
-        pdf_base64: base64 编码的 PDF 字节，可为 None。
-
-    返回值:
-        可交给 PyMuPDF 打开的 PDF 原始字节。
-
-    异常:
-        AppError: 解码失败或下载失败时抛出 INVALID_PARAMETERS。
-    """
-    if pdf_base64 and pdf_base64.strip():
-        try:
-            return base64.b64decode(pdf_base64)
-        except (binascii.Error, ValueError) as error:
-            raise AppError(
-                ErrorCode.INVALID_PARAMETERS,
-                "PDF source could not be loaded",
-            ) from error
-
-    if source and source.strip():
-        try:
-            response = httpx.get(source.strip(), timeout=PDF_DOWNLOAD_TIMEOUT)
-            response.raise_for_status()
-        except httpx.HTTPError as error:
-            raise AppError(
-                ErrorCode.INVALID_PARAMETERS,
-                "PDF source could not be loaded",
-            ) from error
-        return response.content
-
-    raise AppError(ErrorCode.INVALID_PARAMETERS, "PDF source could not be loaded")
 
 
 def make_render_node(*, output_dir: Path) -> Callable[[PdfState], dict[str, Any]]:
@@ -76,56 +28,16 @@ def make_render_node(*, output_dir: Path) -> Callable[[PdfState], dict[str, Any]
         返回值:
             包含 images、page_count 和 rendered_pages 的结果字典。
         """
-        raw = _load_pdf_bytes(state.get("source"), state.get("pdf_base64"))
-
-        try:
-            document = pymupdf.open(stream=raw, filetype="pdf")
-        except Exception as error:
-            raise AppError(
-                ErrorCode.INVALID_PARAMETERS,
-                "PDF source could not be loaded",
-            ) from error
-
-        try:
-            page_count = document.page_count
-            indices = resolve_pages(
-                state.get("pages"),
-                state.get("page_ranges"),
-                page_count,
-            )
-            dpi = state.get("dpi", 150)
-            image_format = state.get("image_format", "png")
-            matrix = pymupdf.Matrix(dpi / 72, dpi / 72)
-            render_id = uuid4().hex
-            out_root = output_dir / render_id
-            out_root.mkdir(parents=True, exist_ok=True)
-
-            images: list[dict[str, Any]] = []
-            for index in indices:
-                pixmap = document[index].get_pixmap(matrix=matrix)
-                file_name = f"page_{index + 1}.{image_format}"
-                pixmap.save(str(out_root / file_name))
-                images.append(
-                    {
-                        "page": index + 1,
-                        "url": f"{STATIC_URL_PREFIX}/{render_id}/{file_name}",
-                        "width": pixmap.width,
-                        "height": pixmap.height,
-                    }
-                )
-        except AppError:
-            raise
-        except Exception as error:
-            raise AppError(ErrorCode.EXECUTION_FAILED, "PDF rendering failed") from error
-        finally:
-            document.close()
-
-        return {
-            "result": {
-                "images": images,
-                "page_count": page_count,
-                "rendered_pages": [image["page"] for image in images],
-            }
-        }
+        result = render_pdf_to_image(
+            output_dir=output_dir,
+            source=state.get("source"),
+            pages=state.get("pages"),
+            page_ranges=state.get("page_ranges"),
+            dpi=state.get("dpi", 150),
+            image_format=state.get("image_format", "png"),
+            return_mode="url",
+            url_prefix=STATIC_URL_PREFIX,
+        )
+        return {"result": result}
 
     return render

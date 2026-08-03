@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi_offline import FastAPIOffline
+from fastmcp.utilities.lifespan import combine_lifespans
 
 from agent_app.api.routes.health import router as health_router
 from agent_app.api.routes.tasks import router as tasks_router
@@ -21,10 +22,9 @@ from agent_app.orchestration.graph import build_orchestration_graph
 from agent_app.orchestration.registry import ExecutorRegistry
 from agent_app.orchestration.router import TaskRouter
 from agent_app.services.task_service import TaskService
+from agent_app.tools import STATIC_URL_PREFIX as PDF_STATIC_URL_PREFIX
+from agent_app.tools import build_mcp_server
 from agent_app.workflows import create_workflows
-from agent_app.workflows.pdf_to_image.nodes import (
-    STATIC_URL_PREFIX as PDF_STATIC_URL_PREFIX,
-)
 
 _SKILL_ROOT = Path(__file__).resolve().parent / "skills"
 
@@ -96,19 +96,36 @@ def create_app(
         lifespan_data["service"] = app.state.task_service
         yield
 
+    # PDF 渲染产物目录（静态文件服务与 MCP url 模式共用），需先于挂载存在。
+    pdf_image_dir = Path(resolved_settings.pdf_image_output_dir)
+    pdf_image_dir.mkdir(parents=True, exist_ok=True)
+
+    # 条件构造工具聚合 MCP 子 app，并合并其 lifespan 以初始化会话管理器。
+    mcp_app = None
+    fastapi_lifespan = lifespan
+    if resolved_settings.mcp_enabled:
+        tools_mcp = build_mcp_server(
+            output_dir=pdf_image_dir,
+            url_prefix=PDF_STATIC_URL_PREFIX,
+        )
+        mcp_app = tools_mcp.http_app(path="/")
+        fastapi_lifespan = combine_lifespans(lifespan, mcp_app.lifespan)
+
     # 使用 FastAPIOffline 自托管 Swagger/ReDoc 静态资源，避免依赖 cdn.jsdelivr.net。
-    app = FastAPIOffline(title="Jarvis", version="0.1.0", lifespan=lifespan)
+    app = FastAPIOffline(title="Jarvis", version="0.1.0", lifespan=fastapi_lifespan)
     app.include_router(health_router)
     app.include_router(tasks_router)
 
-    # 暴露 PDF 转图片工作流渲染产物；目录需先于挂载存在。
-    pdf_image_dir = Path(resolved_settings.pdf_image_output_dir)
-    pdf_image_dir.mkdir(parents=True, exist_ok=True)
+    # 暴露 PDF 转图片工作流渲染产物。
     app.mount(
         PDF_STATIC_URL_PREFIX,
         StaticFiles(directory=str(pdf_image_dir)),
         name="files",
     )
+
+    # 把工具能力通过聚合 MCP server（Streamable HTTP）暴露，供外部 client/agent 调用。
+    if mcp_app is not None:
+        app.mount(resolved_settings.mcp_mount_path, mcp_app)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
