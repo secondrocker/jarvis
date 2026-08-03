@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     task_timeout_seconds: float = Field(default=300.0, gt=0)
     log_level: str = "INFO"
     pdf_image_output_dir: str = ".data/pdf_images"
+    mcp_enabled: bool = True
+    mcp_mount_path: str = "/mcp"
 
 
 @lru_cache(maxsize=1)

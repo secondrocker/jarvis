@@ -1,6 +1,5 @@
 """使用完整装配图和测试替身的端到端验收测试。"""
 
-import base64
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -225,20 +224,30 @@ async def test_explicit_unregistered_workflow_raises(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_explicit_pdf_workflow_renders_default_page() -> None:
+async def test_explicit_pdf_workflow_renders_default_page(monkeypatch) -> None:
+    from agent_app.tools.pdf import io as pdf_io
+
     service = _build_service()
     document = pymupdf.open()
     document.new_page().insert_text((72, 72), "Page 1")
     document.new_page().insert_text((72, 72), "Page 2")
-    pdf_base64 = base64.b64encode(document.tobytes()).decode()
+    content = document.tobytes()
     document.close()
+
+    class _FakeResponse:
+        def __init__(self, body: bytes) -> None:
+            self.content = body
+
+        def raise_for_status(self) -> None:
+            return None
+
+    monkeypatch.setattr(pdf_io.httpx, "get", lambda url, timeout=None: _FakeResponse(content))
 
     response = await service.invoke(
         TaskRequest(
-            message="render via base64",
+            message="https://example.com/sample.pdf",
             execution_mode=ExecutionMode.WORKFLOW,
             task_type="pdf_to_image",
-            parameters={"pdf_base64": pdf_base64},
         )
     )
 
