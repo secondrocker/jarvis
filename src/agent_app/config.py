@@ -1,19 +1,17 @@
-"""应用配置：从 YAML 读取层级结构，敏感凭证从环境变量注入。"""
+"""应用配置：从 YAML 读取层级结构。"""
 
-import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import yaml
-from dotenv import load_dotenv
 from pydantic import BaseModel, Field, SecretStr
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 
 
 class OpenAIConfig(BaseModel):
-    """OpenAI 客户端与模型选择配置（api_key 由环境变量注入）。"""
+    """OpenAI 客户端与模型选择配置。"""
 
     api_key: SecretStr
     model: str = Field(min_length=1)
@@ -37,7 +35,7 @@ class LogConfig(BaseModel):
 
 
 class S3Config(BaseModel):
-    """S3 兼容对象存储配置（凭证由环境变量注入）。"""
+    """S3 兼容对象存储配置。"""
 
     endpoint_url: str | None = None
     access_key: SecretStr | None = None
@@ -65,7 +63,7 @@ class Settings(BaseModel):
 
 
 def load_settings(path: str | Path = DEFAULT_CONFIG_PATH) -> Settings:
-    """从 YAML 读取层级配置，并用环境变量注入敏感凭证。
+    """从 YAML 读取层级配置。
 
     参数:
         path: 配置文件路径，默认项目根 config.yaml。
@@ -73,13 +71,7 @@ def load_settings(path: str | Path = DEFAULT_CONFIG_PATH) -> Settings:
     返回值:
         解析后的应用配置。
     """
-    load_dotenv()
     data: dict[str, Any] = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-    openai = data.setdefault("openai", {})
-    openai["api_key"] = os.environ.get("OPENAI_API_KEY", openai.get("api_key"))
-    s3 = data.setdefault("s3", {})
-    s3["access_key"] = os.environ.get("S3_ACCESS_KEY", s3.get("access_key"))
-    s3["secret_key"] = os.environ.get("S3_SECRET_KEY", s3.get("secret_key"))
     return Settings.model_validate(data)
 
 
@@ -88,6 +80,6 @@ def get_settings() -> Settings:
     """返回进程内复用的应用配置实例。
 
     返回值:
-        从 config.yaml 与环境变量解析并缓存的配置。
+        从 config.yaml 解析并缓存的配置。
     """
     return load_settings()

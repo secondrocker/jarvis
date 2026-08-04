@@ -17,7 +17,6 @@ dependencies = [
     "langgraph",
     "pymupdf",
     "pyyaml",
-    "python-dotenv",
     "sse-starlette",
     "structlog",
     "uvicorn[standard]",

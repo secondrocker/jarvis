@@ -4,9 +4,7 @@ from pydantic import ValidationError
 from agent_app.config import Settings
 
 
-def test_settings_require_openai_credentials_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
+def test_settings_require_openai_credentials_and_model() -> None:
     with pytest.raises(ValidationError) as error:
         Settings.model_validate({"openai": {}})
 
