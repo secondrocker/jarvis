@@ -1,0 +1,20 @@
+openai:
+  api_key: 替换为你的-api-key
+  model: gpt-5.6-sol
+  base_url: ""
+  timeout_seconds: 60
+  max_retries: 2
+task:
+  timeout_seconds: 300
+log:
+  level: INFO
+s3:
+  endpoint_url: https://s3.leegoo.ltd
+  region: us-east-1
+  bucket: secrets
+  access_key: 替换为你的-access-key
+  secret_key: 替换为你的-secret-key
+  url_expires_seconds: 604800
+mcp:
+  enabled: true
+  mount_path: /mcp
