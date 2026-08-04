@@ -87,7 +87,7 @@ def test_stream_failure_ends_with_task_failed(client, fake_service) -> None:
             )
 
     failing = _FailingService()
-    settings = Settings(openai_api_key=SecretStr("k"), openai_model="m")
+    settings = Settings.model_validate({"openai": {"api_key": SecretStr("k"), "model": "m"}})
     app = create_app(settings=settings, service=failing)
 
     with TestClient(app) as c:

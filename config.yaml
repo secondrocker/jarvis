@@ -1,0 +1,17 @@
+openai:
+  model: gpt-5.6-sol
+  base_url: ""
+  timeout_seconds: 60
+  max_retries: 2
+task:
+  timeout_seconds: 300
+log:
+  level: INFO
+s3:
+  endpoint_url: https://s3.leegoo.ltd
+  region: us-east-1
+  bucket: secrets
+  url_expires_seconds: 604800
+mcp:
+  enabled: true
+  mount_path: /mcp

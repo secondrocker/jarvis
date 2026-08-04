@@ -22,7 +22,7 @@ def create_agents(
     runtime = create_restricted_deep_agent(
         model=create_chat_model(
             settings,
-            model_name=settings.solution_planning_model,
+            model_name=settings.openai.solution_planning_model,
         ),
         checkpointer=checkpointer,
         skill_root=skill_root,

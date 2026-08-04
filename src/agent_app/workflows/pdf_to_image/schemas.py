@@ -13,7 +13,7 @@ __all__ = ["PdfInput", "PdfState"]
 class PdfState(TypedDict, total=False):
     """在 PDF 转图片图中流转的状态。"""
 
-    source: str | None
+    url: str | None
     pages: list[int] | None
     page_ranges: list[list[int]] | None
     dpi: int

@@ -16,11 +16,13 @@ dependencies = [
     "langchain-openai",
     "langgraph",
     "pymupdf",
-    "pydantic-settings",
+    "pyyaml",
+    "python-dotenv",
     "sse-starlette",
     "structlog",
     "uvicorn[standard]",
     "fastapi-offline>=1.7.7",
+    "boto3",
 ]
 
 [dependency-groups]

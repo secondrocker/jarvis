@@ -5,10 +5,8 @@ from agent_app.infrastructure.llm import create_chat_model
 
 
 def test_create_chat_model_uses_global_default_without_override() -> None:
-    settings = Settings(
-        openai_api_key="test-key",
-        openai_model="default-model",
-        _env_file=None,
+    settings = Settings.model_validate(
+        {"openai": {"api_key": "test-key", "model": "default-model"}}
     )
 
     model = create_chat_model(settings)
@@ -17,10 +15,8 @@ def test_create_chat_model_uses_global_default_without_override() -> None:
 
 
 def test_create_chat_model_uses_executor_specific_model_override() -> None:
-    settings = Settings(
-        openai_api_key="test-key",
-        openai_model="default-model",
-        _env_file=None,
+    settings = Settings.model_validate(
+        {"openai": {"api_key": "test-key", "model": "default-model"}}
     )
 
     model = create_chat_model(settings, model_name="summary-model")

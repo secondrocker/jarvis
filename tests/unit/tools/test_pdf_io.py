@@ -32,4 +32,4 @@ def test_load_pdf_bytes_rejects_http_error(monkeypatch) -> None:
         load_pdf_bytes("https://example.com/sample.pdf")
 
     assert error.value.code is ErrorCode.INVALID_PARAMETERS
-    assert error.value.public_message == "PDF source could not be loaded"
+    assert error.value.public_message == "PDF could not be loaded"

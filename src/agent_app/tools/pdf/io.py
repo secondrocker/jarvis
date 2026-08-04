@@ -8,11 +8,11 @@ from agent_app.errors import AppError, ErrorCode
 PDF_DOWNLOAD_TIMEOUT = 30.0
 
 
-def load_pdf_bytes(source: str) -> bytes:
+def load_pdf_bytes(url: str) -> bytes:
     """从 URL 下载 PDF 原始字节；失败时抛出安全的 INVALID_PARAMETERS。
 
     参数:
-        source: 可下载的 PDF URL。
+        url: 可下载的 PDF URL。
 
     返回值:
         可交给 PyMuPDF 打开的 PDF 原始字节。
@@ -21,11 +21,11 @@ def load_pdf_bytes(source: str) -> bytes:
         AppError: 下载失败时抛出 INVALID_PARAMETERS。
     """
     try:
-        response = httpx.get(source.strip(), timeout=PDF_DOWNLOAD_TIMEOUT)
+        response = httpx.get(url.strip(), timeout=PDF_DOWNLOAD_TIMEOUT)
         response.raise_for_status()
     except httpx.HTTPError as error:
         raise AppError(
             ErrorCode.INVALID_PARAMETERS,
-            "PDF source could not be loaded",
+            "PDF could not be loaded",
         ) from error
     return response.content

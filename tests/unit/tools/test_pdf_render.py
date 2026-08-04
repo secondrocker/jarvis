@@ -40,7 +40,7 @@ def test_render_pdf_pages_rejects_invalid_pdf() -> None:
         render_pdf_pages(b"not a pdf")
 
     assert error.value.code is ErrorCode.INVALID_PARAMETERS
-    assert error.value.public_message == "PDF source could not be loaded"
+    assert error.value.public_message == "PDF could not be loaded"
 
 
 def test_render_pdf_pages_rejects_out_of_range(pdf_bytes: bytes) -> None:

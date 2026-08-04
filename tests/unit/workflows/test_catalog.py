@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
+from fakes import FakeObjectStorage
 
 from agent_app import workflows as workflows_mod
 from agent_app.errors import AppError, ErrorCode
@@ -25,7 +26,6 @@ def _context(*, max_words: int = 100) -> ExecutionContext:
 async def test_create_workflows_returns_routable_executors(
     fake_summary_model,
     monkeypatch,
-    tmp_path,
 ) -> None:
     selected_models = []
 
@@ -36,10 +36,8 @@ async def test_create_workflows_returns_routable_executors(
     monkeypatch.setattr(workflows_mod, "create_chat_model", fake_create_chat_model)
 
     workflows = create_workflows(
-        settings=SimpleNamespace(
-            summary_model="summary-specialized-model",
-            pdf_image_output_dir=str(tmp_path),
-        )
+        settings=SimpleNamespace(openai=SimpleNamespace(summary_model="summary-specialized-model")),
+        storage=FakeObjectStorage(),
     )
 
     assert set(workflows) == {"summary", "pdf_to_image"}
@@ -70,7 +68,6 @@ async def test_create_workflows_returns_routable_executors(
 async def test_summary_executor_maps_invalid_parameters_to_app_error(
     fake_summary_model,
     monkeypatch,
-    tmp_path,
 ) -> None:
     monkeypatch.setattr(
         workflows_mod,
@@ -78,7 +75,8 @@ async def test_summary_executor_maps_invalid_parameters_to_app_error(
         lambda settings, *, model_name=None: fake_summary_model,
     )
     definition = create_workflows(
-        settings=SimpleNamespace(summary_model=None, pdf_image_output_dir=str(tmp_path))
+        settings=SimpleNamespace(openai=SimpleNamespace(summary_model=None)),
+        storage=FakeObjectStorage(),
     )["summary"]
 
     with pytest.raises(AppError) as error:

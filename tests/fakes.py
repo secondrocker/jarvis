@@ -7,6 +7,40 @@ from typing import Any
 from agent_app.workflows.summary.schemas import SummaryResult
 
 
+class FakeObjectStorage:
+    """记录上传调用并返回稳定下载 URL 的内存对象存储替身。"""
+
+    def __init__(self, *, base_url: str = "https://fake-s3.test") -> None:
+        """绑定 fake 下载 URL 前缀并初始化上传记录。
+
+        参数:
+            base_url: 下载 URL 前缀。
+        """
+        self.base_url = base_url
+        self.uploads: list[tuple[str, str, int]] = []
+
+    def put(self, data: bytes, *, key: str, content_type: str) -> None:
+        """记录上传的 key、content_type 与字节数。
+
+        参数:
+            data: 上传字节。
+            key: 对象 key。
+            content_type: 内容类型。
+        """
+        self.uploads.append((key, content_type, len(data)))
+
+    def download_url(self, key: str) -> str:
+        """返回基于 key 的稳定 fake 下载 URL。
+
+        参数:
+            key: 对象 key。
+
+        返回值:
+            形如 ``{base_url}/{key}`` 的 fake URL。
+        """
+        return f"{self.base_url}/{key}"
+
+
 class FakeStructuredSummaryRunnable:
     """返回固定且符合模型约束的摘要结果的异步可运行对象。"""
 

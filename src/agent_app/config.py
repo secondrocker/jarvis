@@ -1,33 +1,86 @@
-"""应用配置模型及其缓存入口。"""
+"""应用配置：从 YAML 读取层级结构，敏感凭证从环境变量注入。"""
 
+import os
 from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
-from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import yaml
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field, SecretStr
+
+DEFAULT_CONFIG_PATH = Path("config.yaml")
 
 
-class Settings(BaseSettings):
-    """集中定义从环境变量和 .env 文件读取的应用配置。"""
+class OpenAIConfig(BaseModel):
+    """OpenAI 客户端与模型选择配置（api_key 由环境变量注入）。"""
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="ignore",
-    )
-
-    openai_api_key: SecretStr
-    openai_model: str = Field(min_length=1)
+    api_key: SecretStr
+    model: str = Field(min_length=1)
+    base_url: str | None = None
     summary_model: str | None = Field(default=None, min_length=1)
     solution_planning_model: str | None = Field(default=None, min_length=1)
-    openai_base_url: str | None = None
-    llm_timeout_seconds: float = Field(default=60.0, gt=0)
-    llm_max_retries: int = Field(default=2, ge=0, le=5)
-    task_timeout_seconds: float = Field(default=300.0, gt=0)
-    log_level: str = "INFO"
-    pdf_image_output_dir: str = ".data/pdf_images"
-    mcp_enabled: bool = True
-    mcp_mount_path: str = "/mcp"
+    timeout_seconds: float = Field(default=60.0, gt=0)
+    max_retries: int = Field(default=2, ge=0, le=5)
+
+
+class TaskConfig(BaseModel):
+    """任务执行超时配置。"""
+
+    timeout_seconds: float = Field(default=300.0, gt=0)
+
+
+class LogConfig(BaseModel):
+    """日志配置。"""
+
+    level: str = "INFO"
+
+
+class S3Config(BaseModel):
+    """S3 兼容对象存储配置（凭证由环境变量注入）。"""
+
+    endpoint_url: str | None = None
+    access_key: SecretStr | None = None
+    secret_key: SecretStr | None = None
+    region: str = "us-east-1"
+    bucket: str | None = None
+    url_expires_seconds: int = Field(default=604800, gt=0)
+
+
+class McpConfig(BaseModel):
+    """MCP 工具服务暴露配置。"""
+
+    enabled: bool = True
+    mount_path: str = "/mcp"
+
+
+class Settings(BaseModel):
+    """从 config.yaml 读取的层级应用配置。"""
+
+    openai: OpenAIConfig
+    task: TaskConfig = Field(default_factory=TaskConfig)
+    log: LogConfig = Field(default_factory=LogConfig)
+    s3: S3Config = Field(default_factory=S3Config)
+    mcp: McpConfig = Field(default_factory=McpConfig)
+
+
+def load_settings(path: str | Path = DEFAULT_CONFIG_PATH) -> Settings:
+    """从 YAML 读取层级配置，并用环境变量注入敏感凭证。
+
+    参数:
+        path: 配置文件路径，默认项目根 config.yaml。
+
+    返回值:
+        解析后的应用配置。
+    """
+    load_dotenv()
+    data: dict[str, Any] = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    openai = data.setdefault("openai", {})
+    openai["api_key"] = os.environ.get("OPENAI_API_KEY", openai.get("api_key"))
+    s3 = data.setdefault("s3", {})
+    s3["access_key"] = os.environ.get("S3_ACCESS_KEY", s3.get("access_key"))
+    s3["secret_key"] = os.environ.get("S3_SECRET_KEY", s3.get("secret_key"))
+    return Settings.model_validate(data)
 
 
 @lru_cache(maxsize=1)
@@ -35,6 +88,6 @@ def get_settings() -> Settings:
     """返回进程内复用的应用配置实例。
 
     返回值:
-        从环境变量与 .env 文件解析并缓存的配置。
+        从 config.yaml 与环境变量解析并缓存的配置。
     """
-    return Settings()
+    return load_settings()

@@ -1,11 +1,11 @@
 """使用完整装配图和测试替身的端到端验收测试。"""
 
-import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pymupdf
 import pytest
+from fakes import FakeObjectStorage
 
 from agent_app.deep_agents.adapter import DeepAgentAdapter
 from agent_app.infrastructure.checkpoint import create_checkpointer
@@ -75,10 +75,8 @@ def _build_service(checkpointer=None) -> TaskService:
     deep_agent = DeepAgentAdapter(runtime=_FakeDeepAgentRuntime())
     with patch("agent_app.workflows.create_chat_model", return_value=summary_model):
         workflows = create_workflows(
-            settings=SimpleNamespace(
-                summary_model="summary-test-model",
-                pdf_image_output_dir=tempfile.mkdtemp(),
-            )
+            settings=SimpleNamespace(openai=SimpleNamespace(summary_model="summary-test-model")),
+            storage=FakeObjectStorage(),
         )
     registry = ExecutorRegistry(
         workflows,
@@ -255,4 +253,4 @@ async def test_explicit_pdf_workflow_renders_default_page(monkeypatch) -> None:
     assert response.execution.task_type == "pdf_to_image"
     assert response.result["page_count"] == 2
     assert response.result["images"]
-    assert response.result["images"][0]["url"].startswith("/static/pdf_images/")
+    assert response.result["images"][0]["url"].startswith("https://fake-s3.test/")

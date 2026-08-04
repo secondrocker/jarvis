@@ -19,9 +19,8 @@ def test_settings():
     """
     from agent_app.config import Settings
 
-    return Settings(
-        openai_api_key=SecretStr("test-key"),
-        openai_model="gpt-4o-mini",
+    return Settings.model_validate(
+        {"openai": {"api_key": SecretStr("test-key"), "model": "gpt-4o-mini"}}
     )
 
 

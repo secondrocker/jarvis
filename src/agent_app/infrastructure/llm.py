@@ -22,11 +22,11 @@ def create_chat_model(
         已完成参数配置但尚未发起网络请求的聊天模型实例。
     """
     kwargs: dict[str, Any] = {
-        "api_key": settings.openai_api_key.get_secret_value(),
-        "model": model_name or settings.openai_model,
-        "timeout": settings.llm_timeout_seconds,
-        "max_retries": settings.llm_max_retries,
+        "api_key": settings.openai.api_key.get_secret_value(),
+        "model": model_name or settings.openai.model,
+        "timeout": settings.openai.timeout_seconds,
+        "max_retries": settings.openai.max_retries,
     }
-    if settings.openai_base_url:
-        kwargs["base_url"] = settings.openai_base_url
+    if settings.openai.base_url:
+        kwargs["base_url"] = settings.openai.base_url
     return ChatOpenAI(**kwargs)

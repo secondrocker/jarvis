@@ -56,7 +56,7 @@ def render_pdf_pages(
     except Exception as error:
         raise AppError(
             ErrorCode.INVALID_PARAMETERS,
-            "PDF source could not be loaded",
+            "PDF could not be loaded",
         ) from error
 
     try:

@@ -43,7 +43,9 @@ async def test_create_agents_returns_default_solution_planning_executor(
     )
 
     agents = create_agents(
-        settings=SimpleNamespace(solution_planning_model="planning-specialized-model"),
+        settings=SimpleNamespace(
+            openai=SimpleNamespace(solution_planning_model="planning-specialized-model")
+        ),
         checkpointer=object(),
         skill_root=tmp_path,
     )
