@@ -19,7 +19,9 @@ async def test_tool_lists_pdf_to_image(mcp_server) -> None:
     async with Client(mcp_server) as client:
         tools = await client.list_tools()
 
-    assert [tool.name for tool in tools] == ["pdf_to_image"]
+    names = {tool.name for tool in tools}
+    assert "pdf_to_image" in names
+    assert {"upload_from_url", "get_download_url", "get_upload_url"} <= names
 
 
 @pytest.mark.asyncio

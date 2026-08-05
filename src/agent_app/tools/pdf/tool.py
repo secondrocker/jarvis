@@ -8,10 +8,10 @@ from fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 
 from agent_app.errors import AppError
+from agent_app.infrastructure.storage import ObjectStorage
 from agent_app.tools.pdf.io import load_pdf_bytes
 from agent_app.tools.pdf.render import render_pdf_pages
 from agent_app.tools.pdf.schemas import PdfInput
-from agent_app.tools.storage import ObjectStorage
 
 
 def render_pdf_to_image(

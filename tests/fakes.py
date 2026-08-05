@@ -40,6 +40,18 @@ class FakeObjectStorage:
         """
         return f"{self.base_url}/{key}"
 
+    def upload_url(self, key: str, *, content_type: str) -> str:
+        """返回基于 key 的稳定 fake 上传 URL。
+
+        参数:
+            key: 对象 key。
+            content_type: 内容类型（fake 不校验，仅记录）。
+
+        返回值:
+            形如 ``{base_url}/upload/{key}`` 的 fake URL。
+        """
+        return f"{self.base_url}/{key}"
+
 
 class FakeStructuredSummaryRunnable:
     """返回固定且符合模型约束的摘要结果的异步可运行对象。"""

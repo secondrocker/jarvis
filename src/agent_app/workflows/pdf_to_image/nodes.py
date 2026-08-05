@@ -3,9 +3,9 @@
 from collections.abc import Callable
 from typing import Any
 
+from agent_app.infrastructure.storage import ObjectStorage
 from agent_app.tools.pdf.io import load_pdf_bytes
 from agent_app.tools.pdf.tool import render_pdf_to_image
-from agent_app.tools.storage import ObjectStorage
 from agent_app.workflows.pdf_to_image.schemas import PdfState
 
 

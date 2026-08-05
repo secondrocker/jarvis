@@ -4,7 +4,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from agent_app.errors import AppError, ErrorCode
-from agent_app.tools.storage import Boto3Storage
+from agent_app.infrastructure.storage import Boto3Storage
 
 
 class _FakeBotoClient:
@@ -81,5 +81,34 @@ def test_download_url_maps_client_error_to_upstream_unavailable() -> None:
 
     with pytest.raises(AppError) as error:
         storage.download_url("k")
+
+    assert error.value.code is ErrorCode.UPSTREAM_UNAVAILABLE
+
+
+def test_upload_url_returns_presigned_put_with_content_type() -> None:
+    client = _FakeBotoClient(presigned="https://signed.test/put")
+    storage = Boto3Storage(client=client, bucket="secrets", expires_in=3600)
+
+    url = storage.upload_url("uploads/abc.bin", content_type="image/png")
+
+    assert url == "https://signed.test/put"
+    assert client.url_calls == [
+        {
+            "operation": "put_object",
+            "Params": {
+                "Bucket": "secrets",
+                "Key": "uploads/abc.bin",
+                "ContentType": "image/png",
+            },
+            "ExpiresIn": 3600,
+        }
+    ]
+
+
+def test_upload_url_maps_client_error_to_upstream_unavailable() -> None:
+    storage = Boto3Storage(client=_FakeBotoClient(fail=True), bucket="secrets", expires_in=3600)
+
+    with pytest.raises(AppError) as error:
+        storage.upload_url("k", content_type="image/png")
 
     assert error.value.code is ErrorCode.UPSTREAM_UNAVAILABLE

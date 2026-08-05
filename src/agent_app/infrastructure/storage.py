@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class ObjectStorage(Protocol):
-    """上传字节并生成可下载 URL 的对象存储契约。"""
+    """上传字节并生成可下载/上传 URL 的对象存储契约。"""
 
     def put(self, data: bytes, *, key: str, content_type: str) -> None:
         """上传一段字节到指定 key。"""
@@ -28,6 +28,10 @@ class ObjectStorage(Protocol):
 
     def download_url(self, key: str) -> str:
         """返回可下载指定 key 的（预签名）URL。"""
+        ...
+
+    def upload_url(self, key: str, *, content_type: str) -> str:
+        """返回可直接 PUT 上传字节到指定 key 的（预签名）URL。"""
         ...
 
 
@@ -83,6 +87,34 @@ class Boto3Storage:
             return self._client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self._bucket, "Key": key},
+                ExpiresIn=self._expires_in,
+            )
+        except ClientError as error:
+            raise AppError(
+                ErrorCode.UPSTREAM_UNAVAILABLE,
+                "Object storage is temporarily unavailable",
+            ) from error
+
+    def upload_url(self, key: str, *, content_type: str) -> str:
+        """生成 ``bucket/key`` 的预签名 PUT URL，绑定指定 Content-Type。
+
+        返回的 URL 要求 PUT 请求携带匹配的 ``Content-Type`` header，否则签名校验失败。
+
+        参数:
+            key: 对象 key。
+            content_type: 签名绑定的 Content-Type。
+
+        返回值:
+            带签名、可在 ``expires_in`` 内执行 PUT 上传的 URL。
+        """
+        try:
+            return self._client.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": self._bucket,
+                    "Key": key,
+                    "ContentType": content_type,
+                },
                 ExpiresIn=self._expires_in,
             )
         except ClientError as error:

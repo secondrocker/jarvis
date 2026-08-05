@@ -2,12 +2,12 @@
 
 from agent_app.config import Settings
 from agent_app.infrastructure.llm import create_chat_model
+from agent_app.infrastructure.storage import ObjectStorage, create_object_storage
 from agent_app.orchestration.executors import (
     ExecutionContext,
     ExecutorDefinition,
 )
 from agent_app.schemas.tasks import SelectedMode
-from agent_app.tools.storage import ObjectStorage, create_object_storage
 from agent_app.workflows.adapter import WorkflowExecutor
 from agent_app.workflows.pdf_to_image import PdfInput, build_pdf_to_image_graph
 from agent_app.workflows.summary import SummaryInput, build_summary_graph

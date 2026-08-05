@@ -3,7 +3,7 @@
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from agent_app.tools.storage import ObjectStorage
+from agent_app.infrastructure.storage import ObjectStorage
 from agent_app.workflows.pdf_to_image.nodes import make_render_node
 from agent_app.workflows.pdf_to_image.schemas import PdfState
 
