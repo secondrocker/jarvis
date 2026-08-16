@@ -18,3 +18,8 @@ s3:
 mcp:
   enabled: true
   mount_path: /mcp
+web_gateway:
+  base_url: https://surf.leegoo.ltd
+  api_token: 替换为你的-token
+  search_timeout_seconds: 15
+  fetch_timeout_seconds: 40

@@ -55,3 +55,54 @@ def test_factory_registers_profile_excluding_shell_and_subagent_tools(
     assert "execute" in profile.excluded_tools
     # 通过禁用自动添加的通用子代理来移除 task 工具。
     assert profile.general_purpose_subagent.enabled is False
+
+
+def test_factory_passes_custom_tools_through_to_deep_agent(monkeypatch) -> None:
+    """显式注入的工具必须原样传给 create_deep_agent，且受限 profile 不受影响。"""
+    create_calls = []
+    registrations = []
+
+    def fake_create_deep_agent(*args, **kwargs):
+        create_calls.append(kwargs)
+        return object()
+
+    def fake_register(key, profile):
+        registrations.append((key, profile))
+
+    monkeypatch.setattr(factory_mod, "create_deep_agent", fake_create_deep_agent)
+    monkeypatch.setattr(factory_mod, "register_harness_profile", fake_register)
+
+    web_search = object()
+    web_fetch = object()
+    create_restricted_deep_agent(
+        model=object(),
+        checkpointer=object(),
+        skill_root=Path("/fake/skills"),
+        tools=[web_search, web_fetch],
+    )
+
+    assert create_calls[0]["tools"] == [web_search, web_fetch]
+    # 自定义工具注入与受限 profile（排除 execute、禁用子代理）共存。
+    assert "execute" in registrations[0][1].excluded_tools
+    assert registrations[0][1].general_purpose_subagent.enabled is False
+
+
+def test_factory_normalizes_empty_tools_to_none(monkeypatch) -> None:
+    """空工具列表归一为 None，与未注入保持一致语义。"""
+    create_calls = []
+
+    def fake_create_deep_agent(*args, **kwargs):
+        create_calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(factory_mod, "create_deep_agent", fake_create_deep_agent)
+    monkeypatch.setattr(factory_mod, "register_harness_profile", lambda *args, **kwargs: None)
+
+    create_restricted_deep_agent(
+        model=object(),
+        checkpointer=object(),
+        skill_root=Path("/fake/skills"),
+        tools=[],
+    )
+
+    assert create_calls[0]["tools"] is None

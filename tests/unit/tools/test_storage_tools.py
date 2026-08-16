@@ -19,9 +19,9 @@ class _FakeResponse:
 
 
 @pytest.fixture
-def mcp_server():
+def mcp_server(test_settings):
     """注入内存 fake 存储的聚合 MCP 服务实例。"""
-    return build_mcp_server(storage=FakeObjectStorage())
+    return build_mcp_server(settings=test_settings, storage=FakeObjectStorage())
 
 
 @pytest.fixture

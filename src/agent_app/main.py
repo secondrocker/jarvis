@@ -98,7 +98,7 @@ def create_app(
     mcp_app = None
     fastapi_lifespan = lifespan
     if resolved_settings.mcp.enabled:
-        tools_mcp = build_mcp_server()
+        tools_mcp = build_mcp_server(settings=resolved_settings)
         mcp_app = tools_mcp.http_app(path="/")
         fastapi_lifespan = combine_lifespans(lifespan, mcp_app.lifespan)
 

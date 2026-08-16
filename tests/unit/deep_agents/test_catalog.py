@@ -36,15 +36,23 @@ async def test_create_agents_returns_default_solution_planning_executor(
         return agent_model
 
     monkeypatch.setattr(catalog_mod, "create_chat_model", fake_create_chat_model)
+
+    factory_calls = []
+
+    def fake_create_restricted_deep_agent(**kwargs):
+        factory_calls.append(kwargs)
+        return runtime if kwargs["model"] is agent_model else None
+
     monkeypatch.setattr(
         catalog_mod,
         "create_restricted_deep_agent",
-        lambda **kwargs: runtime if kwargs["model"] is agent_model else None,
+        fake_create_restricted_deep_agent,
     )
 
     agents = create_agents(
         settings=SimpleNamespace(
-            openai=SimpleNamespace(solution_planning_model="planning-specialized-model")
+            openai=SimpleNamespace(solution_planning_model="planning-specialized-model"),
+            web_gateway=None,
         ),
         checkpointer=object(),
         skill_root=tmp_path,
@@ -70,3 +78,44 @@ async def test_create_agents_returns_default_solution_planning_executor(
 
     assert result == {"answer": "执行方案"}
     assert runtime.input_received == {"messages": [current_message]}
+    # web_gateway 未配置时不注入任何工具。
+    assert factory_calls[0]["tools"] is None
+
+
+def test_create_agents_injects_web_tools_when_gateway_configured(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """配置了 web_gateway 时，目录必须把搜索/抓取工具注入 Deep Agent。"""
+    monkeypatch.setattr(
+        catalog_mod, "create_chat_model", lambda settings, *, model_name=None: object()
+    )
+
+    factory_calls = []
+
+    def fake_create_restricted_deep_agent(**kwargs):
+        factory_calls.append(kwargs)
+        return _FakeRuntime()
+
+    monkeypatch.setattr(
+        catalog_mod,
+        "create_restricted_deep_agent",
+        fake_create_restricted_deep_agent,
+    )
+
+    from agent_app.config import WebGatewayConfig
+
+    create_agents(
+        settings=SimpleNamespace(
+            openai=SimpleNamespace(solution_planning_model=None),
+            web_gateway=WebGatewayConfig(
+                base_url="https://surf.leegoo.ltd",
+                api_token="gateway-token",
+            ),
+        ),
+        checkpointer=object(),
+        skill_root=tmp_path,
+    )
+
+    tools = factory_calls[0]["tools"]
+    assert {tool.name for tool in tools} == {"web_search", "web_fetch"}

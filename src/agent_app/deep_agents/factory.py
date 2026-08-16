@@ -1,6 +1,8 @@
 """仅启用获准能力的受限 Deep Agent 工厂。"""
 
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 from deepagents import (
     GeneralPurposeSubagentProfile,
@@ -10,6 +12,7 @@ from deepagents import (
 )
 from deepagents.backends import StateBackend
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from agent_app.deep_agents.protocols import DeepAgentRuntime
@@ -30,13 +33,16 @@ def create_restricted_deep_agent(
     model: BaseChatModel,
     checkpointer: BaseCheckpointSaver,
     skill_root: Path,
+    tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
 ) -> DeepAgentRuntime:
-    """创建仅包含获准技能和内存能力的运行时。
+    """创建仅包含获准技能、内存能力与显式注入工具的运行时。
 
     参数:
         model: Deep Agent 使用的聊天模型。
         checkpointer: 保存多轮会话状态的检查点存储。
         skill_root: 项目内 Deep Agent 技能目录。
+        tools: 可选的额外工具（如 Web 搜索/抓取）；harness 的受限 profile
+            按名字精确排除内置工具，不会影响这里的自定义工具。
 
     返回值:
         已禁用 Shell 与子代理调度能力的 Deep Agent 运行时。
@@ -51,7 +57,7 @@ def create_restricted_deep_agent(
 
     return create_deep_agent(
         model=model,
-        tools=None,
+        tools=list(tools) if tools else None,
         skills=[skill_path],
         backend=StateBackend(),
         checkpointer=checkpointer,
