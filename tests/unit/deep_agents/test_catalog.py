@@ -22,8 +22,41 @@ class _FakeRuntime:
         yield ("messages", (AIMessageChunk(content="执行方案"), {}))
 
 
+def _patch_builders(monkeypatch, planning_runtime=None, info_price_runtime=None):
+    """替换两个 agent 构建函数并记录调用参数。"""
+    planning_calls: list[dict] = []
+    info_price_calls: list[dict] = []
+
+    def fake_planning(**kwargs):
+        planning_calls.append(kwargs)
+        return planning_runtime or _FakeRuntime()
+
+    def fake_info_price(**kwargs):
+        info_price_calls.append(kwargs)
+        return info_price_runtime or _FakeRuntime()
+
+    monkeypatch.setattr(catalog_mod, "create_solution_planning_agent", fake_planning)
+    monkeypatch.setattr(catalog_mod, "create_info_price_agent", fake_info_price)
+    return planning_calls, info_price_calls
+
+
+def _settings(**overrides) -> SimpleNamespace:
+    from agent_app.config import S3Config
+
+    openai_fields = {
+        "solution_planning_model": None,
+        "info_price_model": None,
+        **overrides,
+    }
+    return SimpleNamespace(
+        openai=SimpleNamespace(**openai_fields),
+        web_gateway=None,
+        s3=S3Config(),
+    )
+
+
 @pytest.mark.asyncio
-async def test_create_agents_returns_default_solution_planning_executor(
+async def test_create_agents_registers_both_with_single_default(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -36,37 +69,36 @@ async def test_create_agents_returns_default_solution_planning_executor(
         return agent_model
 
     monkeypatch.setattr(catalog_mod, "create_chat_model", fake_create_chat_model)
-
-    factory_calls = []
-
-    def fake_create_restricted_deep_agent(**kwargs):
-        factory_calls.append(kwargs)
-        return runtime if kwargs["model"] is agent_model else None
-
-    monkeypatch.setattr(
-        catalog_mod,
-        "create_restricted_deep_agent",
-        fake_create_restricted_deep_agent,
-    )
+    planning_calls, info_price_calls = _patch_builders(monkeypatch, runtime, runtime)
 
     agents = create_agents(
-        settings=SimpleNamespace(
-            openai=SimpleNamespace(solution_planning_model="planning-specialized-model"),
-            web_gateway=None,
+        settings=_settings(
+            solution_planning_model="planning-specialized-model",
+            info_price_model="info-price-specialized-model",
         ),
         checkpointer=object(),
         skill_root=tmp_path,
     )
 
-    assert set(agents) == {"solution_planning"}
-    definition = agents["solution_planning"]
-    assert definition.mode is SelectedMode.DEEP_AGENT
-    assert definition.description
-    assert definition.is_default is True
-    assert selected_models == ["planning-specialized-model"]
+    # 两个 agent 均注册；恰一个默认（solution_planning）。
+    assert set(agents) == {"solution_planning", "info_price"}
+    assert agents["solution_planning"].is_default is True
+    assert agents["info_price"].is_default is False
+    for definition in agents.values():
+        assert definition.mode is SelectedMode.DEEP_AGENT
+        assert definition.description
 
+    # 各自选择专用模型。
+    assert selected_models == [
+        "planning-specialized-model",
+        "info-price-specialized-model",
+    ]
+    assert planning_calls[0]["model"] is agent_model
+    assert info_price_calls[0]["model"] is agent_model
+
+    # 执行器仍走 DeepAgentAdapter 契约。
     current_message = HumanMessage(content="制定发布计划")
-    result = await definition.executor.run(
+    result = await agents["solution_planning"].executor.run(
         ExecutionContext(
             message="制定发布计划",
             messages=[current_message],
@@ -75,47 +107,48 @@ async def test_create_agents_returns_default_solution_planning_executor(
             emit=lambda _: None,
         )
     )
-
     assert result == {"answer": "执行方案"}
     assert runtime.input_received == {"messages": [current_message]}
-    # web_gateway 未配置时不注入任何工具。
-    assert factory_calls[0]["tools"] is None
 
 
-def test_create_agents_injects_web_tools_when_gateway_configured(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    """配置了 web_gateway 时，目录必须把搜索/抓取工具注入 Deep Agent。"""
+def test_create_agents_without_gateway_omits_web_tools(monkeypatch, tmp_path) -> None:
+    """web_gateway 未配置时，solution_planning 不注入工具且 info_price 仍可构建。"""
     monkeypatch.setattr(
         catalog_mod, "create_chat_model", lambda settings, *, model_name=None: object()
     )
+    planning_calls, info_price_calls = _patch_builders(monkeypatch)
 
-    factory_calls = []
+    create_agents(settings=_settings(), checkpointer=object(), skill_root=tmp_path)
 
-    def fake_create_restricted_deep_agent(**kwargs):
-        factory_calls.append(kwargs)
-        return _FakeRuntime()
+    assert planning_calls[0]["tools"] is None
+    assert info_price_calls[0]["web_client"] is None
 
+
+def test_create_agents_passes_gateway_and_storage_to_info_price(monkeypatch, tmp_path) -> None:
+    """配置了 web_gateway 时工具注入 planning，网关与存储透传给 info_price。"""
     monkeypatch.setattr(
-        catalog_mod,
-        "create_restricted_deep_agent",
-        fake_create_restricted_deep_agent,
+        catalog_mod, "create_chat_model", lambda settings, *, model_name=None: object()
     )
+    planning_calls, info_price_calls = _patch_builders(monkeypatch)
 
-    from agent_app.config import WebGatewayConfig
+    web_client = object()
+    storage = object()
+    monkeypatch.setattr(catalog_mod, "create_web_gateway", lambda config: web_client)
+    monkeypatch.setattr(catalog_mod, "create_object_storage", lambda config: storage)
 
-    create_agents(
-        settings=SimpleNamespace(
-            openai=SimpleNamespace(solution_planning_model=None),
-            web_gateway=WebGatewayConfig(
-                base_url="https://surf.leegoo.ltd",
-                api_token="gateway-token",
-            ),
+    from agent_app.config import S3Config, WebGatewayConfig
+
+    settings = SimpleNamespace(
+        openai=SimpleNamespace(solution_planning_model=None, info_price_model=None),
+        web_gateway=WebGatewayConfig(
+            base_url="https://surf.leegoo.ltd",
+            api_token="gateway-token",
         ),
-        checkpointer=object(),
-        skill_root=tmp_path,
+        s3=S3Config(),
     )
+    create_agents(settings=settings, checkpointer=object(), skill_root=tmp_path)
 
-    tools = factory_calls[0]["tools"]
+    tools = planning_calls[0]["tools"]
     assert {tool.name for tool in tools} == {"web_search", "web_fetch"}
+    assert info_price_calls[0]["web_client"] is web_client
+    assert info_price_calls[0]["storage"] is storage

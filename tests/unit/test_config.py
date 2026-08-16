@@ -23,6 +23,7 @@ def test_settings_apply_demo_timeout_defaults() -> None:
     assert settings.log.level == "INFO"
     assert settings.openai.summary_model is None
     assert settings.openai.solution_planning_model is None
+    assert settings.openai.info_price_model is None
 
 
 def test_settings_allow_executor_specific_models() -> None:
@@ -33,12 +34,14 @@ def test_settings_allow_executor_specific_models() -> None:
                 "model": "default-model",
                 "summary_model": "summary-model",
                 "solution_planning_model": "planning-model",
+                "info_price_model": "info-price-model",
             }
         }
     )
 
     assert settings.openai.summary_model == "summary-model"
     assert settings.openai.solution_planning_model == "planning-model"
+    assert settings.openai.info_price_model == "info-price-model"
 
 
 def test_web_gateway_defaults_to_disabled_when_section_missing() -> None:

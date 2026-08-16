@@ -22,6 +22,7 @@ dependencies = [
     "uvicorn[standard]",
     "fastapi-offline>=1.7.7",
     "boto3",
+    "matplotlib>=3.11.1",
 ]
 
 [dependency-groups]

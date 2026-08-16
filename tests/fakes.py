@@ -4,6 +4,12 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
+from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.tools import BaseTool
+
 from agent_app.workflows.summary.schemas import SummaryResult
 
 
@@ -51,6 +57,75 @@ class FakeObjectStorage:
             形如 ``{base_url}/upload/{key}`` 的 fake URL。
         """
         return f"{self.base_url}/{key}"
+
+
+class ScriptedModel(BaseChatModel):
+    """按脚本弹出消息、不访问网络的聊天模型替身。
+
+    供集成测试驱动真实 deepagents 运行时：每次模型调用按顺序弹出
+    ``scripts`` 中的一个条目并整体返回（工具调用或纯文本），脚本耗尽后
+    抛出断言错误。子代理与主代理可共用同一实例（共享脚本队列）。
+    """
+
+    model_name: str = "scripted-model"
+    scripts: list[Any] = []
+
+    @classmethod
+    def from_scripts(cls, scripts: list[Any]) -> "ScriptedModel":
+        """以受脚本列表构造替身。
+
+        参数:
+            scripts: 依次返回的消息或工具调用字典列表。
+        """
+        return cls(scripts=list(scripts))
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted-model"
+
+    def _get_ls_params(self, **kwargs: Any) -> dict[str, Any]:
+        """伪装为 openai 提供方，使 harness 按 provider 级注册键命中。"""
+        return {**super()._get_ls_params(**kwargs), "ls_provider": "openai"}
+
+    @property
+    def calls(self) -> list[list[BaseMessage]]:
+        """记录每次模型调用的输入消息（含子代理调用）。"""
+        return self.__dict__.setdefault("_calls", [])
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        """按脚本弹出一条 AIMessage 并整体返回。"""
+        self.calls.append(list(messages))
+        script = self.scripts.pop(0)
+        return ChatResult(generations=[ChatGeneration(message=_to_ai_message(script))])
+
+    def bind_tools(self, tools: list[BaseTool | Any], **kwargs: Any) -> Any:
+        """记录绑定的工具名（受限 profile 过滤后模型可见的集合）。"""
+        bound = self.__dict__.setdefault("_bound_tools", [])
+        bound.append([getattr(tool, "name", str(tool)) for tool in tools])
+        return self
+
+    @property
+    def bound_tools(self) -> list[list[str]]:
+        """历次 bind_tools 收到的工具名快照。"""
+        return self.__dict__.setdefault("_bound_tools", [])
+
+
+def _to_ai_message(script: Any) -> AIMessage:
+    """把脚本条目归一为 AIMessage（纯文本或工具调用字典）。"""
+    if isinstance(script, AIMessage):
+        return script
+    if isinstance(script, dict):
+        return AIMessage(
+            content=script.get("content", ""),
+            tool_calls=[script["tool_call"]] if script.get("tool_call") else [],
+        )
+    return AIMessage(content=str(script))
 
 
 class FakeStructuredSummaryRunnable:

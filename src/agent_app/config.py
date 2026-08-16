@@ -18,6 +18,7 @@ class OpenAIConfig(BaseModel):
     base_url: str | None = None
     summary_model: str | None = Field(default=None, min_length=1)
     solution_planning_model: str | None = Field(default=None, min_length=1)
+    info_price_model: str | None = Field(default=None, min_length=1)
     timeout_seconds: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=2, ge=0, le=5)
 

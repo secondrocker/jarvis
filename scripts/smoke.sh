@@ -1,34 +1,32 @@
 #!/usr/bin/env bash
 # 端到端冒烟测试：启动服务并验证三条请求路径。
-# 需要在环境变量或 .env 中提供有效的 OPENAI_API_KEY 和 OPENAI_MODEL。
+# 需要在项目根 config.yaml 中配置有效的 openai 节（api_key、model 等）。
 set -euo pipefail
 
+# 切到项目根，保证 config.yaml 与 uv run 都相对项目根解析。
+cd "$(dirname "$0")/.."
+
 BASE_URL="${BASE_URL:-http://localhost:8000}"
+CONFIG_FILE="${CONFIG_FILE:-config.yaml}"
 POLL_INTERVAL=1
 MAX_WAIT=30
 
 # --- 前置检查 ---------------------------------------------------------------
 
-if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  if [[ -f .env ]]; then
-    # shellcheck disable=SC1091
-    set -a; source .env; set +a
-  fi
-fi
-
-if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  echo "ERROR: OPENAI_API_KEY is not set. Export it or add it to .env." >&2
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  echo "ERROR: ${CONFIG_FILE} not found. Copy config.example.yaml to ${CONFIG_FILE} and fill in the openai section." >&2
   exit 1
 fi
 
-if [[ -z "${OPENAI_MODEL:-}" ]]; then
-  echo "ERROR: OPENAI_MODEL is not set. Export it or add it to .env." >&2
+# 用与服务相同的加载路径解析并校验配置（api_key/model 缺失时此处即报错）。
+if ! OPENAI_MODEL=$(uv run python -c "from agent_app.config import load_settings; print(load_settings('${CONFIG_FILE}').openai.model)" 2>/dev/null); then
+  echo "ERROR: failed to load settings from ${CONFIG_FILE}. Check the openai section (api_key, model are required)." >&2
   exit 1
 fi
 
 # --- 启动服务 ---------------------------------------------------------------
 
-echo "Starting server (model: ${OPENAI_MODEL}) ..."
+echo "Starting server (model: ${OPENAI_MODEL}, config: ${CONFIG_FILE}) ..."
 uv run uvicorn agent_app.main:create_app --factory --port 8000 &
 SERVER_PID=$!
 

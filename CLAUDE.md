@@ -15,7 +15,7 @@ make install    # uv sync --all-groups（安装依赖）
 make run        # uvicorn agent_app.main:create_app --factory --reload，监听 :8000
 make test       # uv run pytest（单元 + 集成 + 契约，全部不联网）
 make lint       # ruff check . && ruff format --check .
-make smoke      # scripts/smoke.sh（端到端，需要真实的 OPENAI_API_KEY）
+make smoke      # scripts/smoke.sh（端到端，需要 config.yaml 中配置真实的 openai 节）
 ```
 
 运行单个测试 / 子集：
@@ -33,7 +33,7 @@ uv run ruff format .
 uv run ruff check . --fix
 ```
 
-需要 `.env`（从 `.env.example` 复制）：`OPENAI_API_KEY` 与默认 `OPENAI_MODEL`。除 `make smoke` 外，所有测试都不联网。
+配置从项目根 `config.yaml` 读取（从 `config.example.yaml` 复制）：`openai` 节必填 `api_key` 与 `model`。除 `make smoke` 外，所有测试都不联网。
 
 ## 架构（必须跨文件理解的全局设计）
 
@@ -70,19 +70,26 @@ uv run ruff check . --fix
 在所属目录的创建函数里登记（**而非**改图）：
 
 - 工作流：`workflows/__init__.py` 的 `create_workflows()`，提供 `WorkflowExecutor` + `ExecutorDefinition`。
-- Deep Agent：`deep_agents/catalog.py` 的 `create_agents()`。
+- Deep Agent：新建 `deep_agents/<name>/` 模块（prompt/subagents/技能声明，调 `harness.build_deep_agent`），再在 `deep_agents/catalog.py` 的 `create_agents()` 登记。
 
 注册后自动出现在路由候选中。Deep Agent 目录必须有且仅有一个 `is_default=True` 项（注册表构造时强制校验）。
 
-### Deep Agent 受限机制（非显而易见）
+当前 Deep Agent：`solution_planning`（默认，结构化方案规划）、`info_price`（信息价查询/比价/趋势分析，researcher+analyst 职能子代理，图表经 `tools/chart_tools.py` 上传对象存储）。
 
-`deep_agents/factory.py` 通过 `HarnessProfile` 排除 `execute`（Shell）工具；子代理调度通过 `GeneralPurposeSubagentProfile(enabled=False)` 禁用——不能直接排除 `SubAgentMiddleware`，否则 harness 抛 `ValueError`。使用 `StateBackend`（进程内虚拟文件系统）和 `solution_planning` 技能。
+### Deep Agent 装配（`deep_agents/harness.py`，非显而易见）
 
-**关键陷阱**：`create_deep_agent` 按**模型提供方**查找 harness profile，所以对预构建的 `ChatOpenAI`，必须用 `register_harness_profile("openai", profile)` 在提供方级别注册（见 `_RESTRICTED_PROVIDER_KEY`），而不是按模型名。
+每个 agent 是独立模块（`deep_agents/<name>/`，含 prompt、子代理、技能声明），`harness.py` 只沉淀公共装配：受限 profile（排除 `execute` Shell 工具 + `GeneralPurposeSubagentProfile(enabled=False)` 禁用通用子代理——不能直接排除 `SubAgentMiddleware`，否则 harness 抛 `ValueError`；需要子代理的 agent 显式传 `subagents=`，`task` 工具照常装配）+ `CompositeBackend` + `/skills/**` 写保护。
+
+**关键陷阱**：
+- `create_deep_agent` 按**模型提供方**查找 harness profile，对预构建的 `ChatOpenAI` 必须用 `register_harness_profile("openai", profile)` 在提供方级别注册（harness.py 以模块级标志幂等注册，注册表是进程级全局 dict 且 additive merge）。
+- `SkillsMiddleware` 只走 backend API（无磁盘回退），`StateBackend` 读不到磁盘技能——必须 `CompositeBackend(default=StateBackend(), routes={"/skills/": FilesystemBackend(root_dir=skill_root, virtual_mode=True)})`，并用 `FilesystemPermission(operations=["write"], paths=["/skills/**"], mode="deny")` 挡住写穿。
+- adapter 的多流模式必须传 **list**（`stream_mode=["messages", "updates"]`）：langgraph `_output()` 只在 `isinstance(stream_mode, list)` 时产出 `(mode, payload)`，tuple 会退化为裸 payload 导致解包崩溃。嵌套子图（子代理）的中间输出靠 checkpoint_ns 含 `|` 过滤。
+- `event_mapper` 同时处理 `AIMessage` 与 `AIMessageChunk`（messages 流模式下非流式模型产出完整 AIMessage）。
+- task list（`TodoListMiddleware`/`write_todos`）与自动压缩（`SummarizationMiddleware`）默认装配，勿通过 profile 排除。
 
 ### 配置与模型分配（`config.py`）
 
-`OPENAI_MODEL` 是路由器及所有未单独配置执行器的默认模型。每个执行器在所属创建函数里选自己的环境变量：当前有 `SUMMARY_MODEL`、`SOLUTION_PLANNING_MODEL`，未设置时回退到 `OPENAI_MODEL`。新增执行器沿用此模式。
+`openai.model` 是路由器及所有未单独配置执行器的默认模型。每个执行器在所属创建函数里选自己的可选字段：当前有 `summary_model`、`solution_planning_model`、`info_price_model`，未设置时回退到 `openai.model`。新增执行器沿用此模式。
 
 ### 会话与检查点
 

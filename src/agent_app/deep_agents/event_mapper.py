@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from langchain_core.messages import AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from agent_app.schemas.events import EventType, PendingEvent
 
@@ -16,7 +16,9 @@ def map_deep_agent_event(message: Any) -> PendingEvent | None:
     返回值:
         映射后的标准化待处理事件；消息不受支持或无内容时返回 None。
     """
-    if isinstance(message, AIMessageChunk):
+    # messages 流模式下，流式模型产出 AIMessageChunk；非流式模型
+    # （langgraph 会包装其结果）产出完整 AIMessage，两者均需处理。
+    if isinstance(message, (AIMessage, AIMessageChunk)):
         if message.tool_calls:
             tool_name = message.tool_calls[0].get("name", "unknown")
             return PendingEvent(
