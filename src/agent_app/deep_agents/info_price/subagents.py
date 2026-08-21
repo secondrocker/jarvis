@@ -13,8 +13,8 @@ from agent_app.deep_agents.info_price.prompts import (
     RESEARCHER_SYSTEM_PROMPT,
 )
 
-# researcher 复用主 agent 的信息价技能（含网站清单 references）。
-_RESEARCHER_SKILLS = ["/skills/info-price/"]
+# researcher 专属取数技能容器（站点清单与取数战术在内层 research/ 技能）。
+_RESEARCHER_SKILLS = ["/skills/info-price-research/"]
 
 
 def build_info_price_subagents(

@@ -86,6 +86,7 @@ uv run ruff check . --fix
 - adapter 的多流模式必须传 **list**（`stream_mode=["messages", "updates"]`）：langgraph `_output()` 只在 `isinstance(stream_mode, list)` 时产出 `(mode, payload)`，tuple 会退化为裸 payload 导致解包崩溃。嵌套子图（子代理）的中间输出靠 checkpoint_ns 含 `|` 过滤。
 - `event_mapper` 同时处理 `AIMessage` 与 `AIMessageChunk`（messages 流模式下非流式模型产出完整 AIMessage）。
 - task list（`TodoListMiddleware`/`write_todos`）与自动压缩（`SummarizationMiddleware`）默认装配，勿通过 profile 排除。
+- 子代理图有**独立的步数预算**：`create_agent` 给每个子代理绑定自己的 `recursion_limit=9999`，且绑定值在 config 合并中压过父图运行时 config——父图限制约束不到子代理内部循环。对子代理的工具调用限流必须在其 `SubAgent` spec 的 `middleware` 注入（langchain 官方 `ToolCallLimitMiddleware`，见 `tools/web_tools.py` 的 `create_web_call_limit_middleware`，researcher 已装配）。
 
 ### 配置与模型分配（`config.py`）
 

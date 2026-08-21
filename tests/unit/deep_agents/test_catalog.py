@@ -17,7 +17,7 @@ class _FakeRuntime:
     def __init__(self) -> None:
         self.input_received = None
 
-    async def astream(self, input, config, *, stream_mode):
+    async def astream(self, input, config, *, stream_mode, **kwargs):
         self.input_received = input
         yield ("messages", (AIMessageChunk(content="执行方案"), {}))
 
@@ -112,7 +112,7 @@ async def test_create_agents_registers_both_with_single_default(
 
 
 def test_create_agents_without_gateway_omits_web_tools(monkeypatch, tmp_path) -> None:
-    """web_gateway 未配置时，solution_planning 不注入工具且 info_price 仍可构建。"""
+    """web_gateway 未配置时，solution_planning 不注入工具，info_price 仍可构建。"""
     monkeypatch.setattr(
         catalog_mod, "create_chat_model", lambda settings, *, model_name=None: object()
     )

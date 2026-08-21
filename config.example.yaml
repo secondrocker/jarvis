@@ -2,10 +2,13 @@ openai:
   api_key: 替换为你的-api-key
   model: gpt-5.6-sol
   base_url: ""
+  summary_model: null
+  solution_planning_model: null
+  info_price_model: null
   timeout_seconds: 60
   max_retries: 2
 task:
-  timeout_seconds: 300
+  timeout_seconds: 600
 log:
   level: INFO
 s3:
@@ -23,3 +26,4 @@ web_gateway:
   api_token: 替换为你的-token
   search_timeout_seconds: 15
   fetch_timeout_seconds: 40
+  total_call_limit: 8

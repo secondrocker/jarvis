@@ -58,6 +58,7 @@ def build_task_service(settings: Settings) -> TaskService:
         graph=graph,
         registry=registry,
         task_timeout_seconds=settings.task.timeout_seconds,
+        web_call_limit=settings.web_gateway.total_call_limit,
     )
 
 

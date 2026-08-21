@@ -26,7 +26,7 @@ class OpenAIConfig(BaseModel):
 class TaskConfig(BaseModel):
     """任务执行超时配置。"""
 
-    timeout_seconds: float = Field(default=300.0, gt=0)
+    timeout_seconds: float = Field(default=600.0, gt=0)
 
 
 class LogConfig(BaseModel):
@@ -60,6 +60,9 @@ class WebGatewayConfig(BaseModel):
     api_token: SecretStr | None = None
     search_timeout_seconds: float = Field(default=15.0, gt=0)
     fetch_timeout_seconds: float = Field(default=40.0, gt=0)
+    # web_search + web_fetch 在单次任务内的合计调用次数上限（全任务级，
+    # 跨所有子代理共享，见 tools/web_budget.py）。建议 5-8。
+    total_call_limit: int = Field(default=8, ge=1)
 
     @field_validator("base_url")
     @classmethod

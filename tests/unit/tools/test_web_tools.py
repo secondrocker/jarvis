@@ -11,6 +11,11 @@ from pydantic import SecretStr
 from agent_app.config import Settings
 from agent_app.errors import AppError, ErrorCode
 from agent_app.tools import build_mcp_server
+from agent_app.tools.web_budget import (
+    current_web_call_budget,
+    reset_web_call_budget,
+    set_web_call_budget,
+)
 from agent_app.tools.web_tools import create_web_agent_tools
 
 
@@ -157,25 +162,28 @@ def test_agent_tools_names_match_contract(fake_client) -> None:
     assert {tool.name for tool in tools} == {"web_search", "web_fetch"}
 
 
-def test_agent_search_returns_gateway_payload(fake_client) -> None:
+@pytest.mark.asyncio
+async def test_agent_search_returns_gateway_payload(fake_client) -> None:
     web_search = create_web_agent_tools(fake_client)[0]
 
-    result = web_search.invoke({"query": "  langgraph  ", "limit": 7})
+    result = await web_search.ainvoke({"query": "  langgraph  ", "limit": 7})
 
     assert result == {"results": [{"title": "langgraph"}]}
     assert fake_client.search_calls == [{"query": "langgraph", "limit": 7}]
 
 
-def test_agent_fetch_returns_gateway_payload(fake_client) -> None:
+@pytest.mark.asyncio
+async def test_agent_fetch_returns_gateway_payload(fake_client) -> None:
     web_fetch = create_web_agent_tools(fake_client)[1]
 
-    result = web_fetch.invoke({"url": "https://example.com/page", "max_chars": 3000})
+    result = await web_fetch.ainvoke({"url": "https://example.com/page", "max_chars": 3000})
 
     assert result == {"content": "body of https://example.com/page"}
     assert fake_client.fetch_calls == [{"url": "https://example.com/page", "max_chars": 3000}]
 
 
-def test_agent_tools_return_error_dict_instead_of_raising() -> None:
+@pytest.mark.asyncio
+async def test_agent_tools_return_error_dict_instead_of_raising() -> None:
     """网关故障时 Agent 工具必须返回错误字典而非抛异常（抛异常会中断整个任务）。"""
     failing = FakeWebGatewayClient(
         error=AppError(ErrorCode.UPSTREAM_UNAVAILABLE, "Web gateway is temporarily unavailable")
@@ -186,13 +194,47 @@ def test_agent_tools_return_error_dict_instead_of_raising() -> None:
         (tools[0], {"query": "x"}),
         (tools[1], {"url": "https://example.com/page"}),
     ):
-        result = tool_instance.invoke(args)
+        result = await tool_instance.ainvoke(args)
         assert result == {
             "error": {
                 "code": "UPSTREAM_UNAVAILABLE",
                 "message": "Web gateway is temporarily unavailable",
             }
         }
+
+
+@pytest.mark.asyncio
+async def test_agent_tools_enforce_call_budget(fake_client) -> None:
+    """预算超限后工具返回错误字典且不再请求网关（促使模型收敛）。"""
+    token = set_web_call_budget(2)
+    try:
+        web_search, web_fetch = create_web_agent_tools(fake_client)
+
+        ok_search = await web_search.ainvoke({"query": "a"})
+        ok_fetch = await web_fetch.ainvoke({"url": "https://example.com/a"})
+        blocked = await web_search.ainvoke({"query": "b"})
+    finally:
+        reset_web_call_budget(token)
+
+    assert ok_search == {"results": [{"title": "a"}]}
+    assert ok_fetch == {"content": "body of https://example.com/a"}
+    assert blocked["error"]["code"] == "QUERY_BUDGET_EXCEEDED"
+    assert "上限" in blocked["error"]["message"]
+    # 超限的调用没有到达网关。
+    assert fake_client.search_calls == [{"query": "a", "limit": 5}]
+
+
+@pytest.mark.asyncio
+async def test_agent_tools_unlimited_without_budget(fake_client) -> None:
+    """预算未初始化（如脱离 TaskService 的直接调用）时不做限制。"""
+    assert current_web_call_budget() is None
+    web_search = create_web_agent_tools(fake_client)[0]
+
+    for _ in range(3):
+        result = await web_search.ainvoke({"query": "x"})
+        assert result == {"results": [{"title": "x"}]}
+
+    assert len(fake_client.search_calls) == 3
 
 
 def test_agent_tools_validate_args(fake_client) -> None:

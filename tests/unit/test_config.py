@@ -19,7 +19,7 @@ def test_settings_apply_demo_timeout_defaults() -> None:
 
     assert settings.openai.timeout_seconds == 60.0
     assert settings.openai.max_retries == 2
-    assert settings.task.timeout_seconds == 300.0
+    assert settings.task.timeout_seconds == 600.0
     assert settings.log.level == "INFO"
     assert settings.openai.summary_model is None
     assert settings.openai.solution_planning_model is None
@@ -51,6 +51,7 @@ def test_web_gateway_defaults_to_disabled_when_section_missing() -> None:
     assert settings.web_gateway.api_token is None
     assert settings.web_gateway.search_timeout_seconds == 15.0
     assert settings.web_gateway.fetch_timeout_seconds == 40.0
+    assert settings.web_gateway.total_call_limit == 8
 
 
 def test_web_gateway_parses_full_section_and_normalizes_trailing_slash() -> None:
@@ -62,6 +63,7 @@ def test_web_gateway_parses_full_section_and_normalizes_trailing_slash() -> None
                 "api_token": "gateway-token",
                 "search_timeout_seconds": 20,
                 "fetch_timeout_seconds": 45,
+                "total_call_limit": 5,
             },
         }
     )
@@ -70,6 +72,7 @@ def test_web_gateway_parses_full_section_and_normalizes_trailing_slash() -> None
     assert settings.web_gateway.api_token == SecretStr("gateway-token")
     assert settings.web_gateway.search_timeout_seconds == 20.0
     assert settings.web_gateway.fetch_timeout_seconds == 45.0
+    assert settings.web_gateway.total_call_limit == 5
 
 
 @pytest.mark.parametrize("partial", [{"base_url": "https://surf.leegoo.ltd"}, {"api_token": "t"}])
@@ -92,6 +95,20 @@ def test_web_gateway_rejects_non_positive_timeouts() -> None:
                     "base_url": "https://surf.leegoo.ltd",
                     "api_token": "t",
                     "search_timeout_seconds": 0,
+                },
+            }
+        )
+
+
+def test_web_gateway_rejects_non_positive_run_limits() -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate(
+            {
+                "openai": {"api_key": "test-key", "model": "test-model"},
+                "web_gateway": {
+                    "base_url": "https://surf.leegoo.ltd",
+                    "api_token": "t",
+                    "total_call_limit": 0,
                 },
             }
         )

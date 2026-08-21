@@ -17,6 +17,7 @@ from deepagents import (
 )
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from deepagents.middleware import FilesystemPermission
+from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -65,6 +66,7 @@ def build_deep_agent(
     tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
     system_prompt: str | None = None,
     subagents: Sequence[SubAgent] | None = None,
+    middleware: Sequence[AgentMiddleware] | None = None,
 ) -> DeepAgentRuntime:
     """按公共约束构建受限 Deep Agent。
 
@@ -82,6 +84,8 @@ def build_deep_agent(
             受限 profile 按名字精确排除内置工具，不影响自定义工具。
         system_prompt: agent 个性指令，置于 SDK 基础 prompt 之前。
         subagents: 可选的职能子代理定义；传入后主代理获得 `task` 工具。
+        middleware: 可选的额外中间件（如 web 工具限流），置于 SDK 默认
+            栈之后装配；主图与子代理图步数预算独立，需限流的图各自注入。
 
     返回值:
         已禁用 Shell 与通用子代理的 Deep Agent 运行时。
@@ -104,6 +108,7 @@ def build_deep_agent(
         tools=list(tools) if tools else None,
         system_prompt=system_prompt,
         subagents=list(subagents) if subagents else None,
+        middleware=list(middleware) if middleware else None,
         skills=[tuple(source) for source in skill_sources],
         permissions=[
             # /skills/ 路由直通真实磁盘源码目录，必须拒绝写入；

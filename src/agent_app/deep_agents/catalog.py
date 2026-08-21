@@ -25,6 +25,8 @@ def create_agents(
     """创建全部 Deep Agent 及其路由元数据。"""
     web_client = create_web_gateway(settings.web_gateway)
     storage = create_object_storage(settings.s3)
+    # web 工具调用由全任务级 web_budget 限流（TaskService 在任务边界
+    # set/reset，跨所有子代理共享），不依赖逐图中间件。
     planning = create_solution_planning_agent(
         model=create_chat_model(
             settings,

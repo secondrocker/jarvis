@@ -16,6 +16,7 @@ from agent_app.schemas.tasks import (
     TaskRequest,
     TaskResponse,
 )
+from agent_app.tools.web_budget import reset_web_call_budget, set_web_call_budget
 
 
 class TaskService:
@@ -27,6 +28,7 @@ class TaskService:
         graph: CompiledStateGraph,
         registry: ExecutorRegistry,
         task_timeout_seconds: float,
+        web_call_limit: int = 8,
     ) -> None:
         """保存编排图、规范化任务名称和正数超时时间。
 
@@ -34,6 +36,7 @@ class TaskService:
             graph: 已编译的顶层编排图。
             registry: 统一校验 workflow 与 Deep Agent 目标的注册表。
             task_timeout_seconds: 单次任务的最大执行秒数。
+            web_call_limit: 单任务 web_search/web_fetch 合计调用次数上限。
 
         异常:
             ValueError: 超时时间不是正数时抛出。
@@ -42,7 +45,10 @@ class TaskService:
         self._registry = registry
         if task_timeout_seconds <= 0:
             raise ValueError("task_timeout_seconds must be positive")
+        if web_call_limit <= 0:
+            raise ValueError("web_call_limit must be positive")
         self._timeout = task_timeout_seconds
+        self._web_call_limit = web_call_limit
 
     def preflight(self, request: TaskRequest) -> None:
         """拒绝请求中显式填写但尚未注册的 workflow 或 agent 目标。
@@ -74,84 +80,92 @@ class TaskService:
 
         yield sequencer.next(EventType.TASK_STARTED, {"message": request.message})
 
-        graph_input: AgentState = {
-            "task_id": task_id,
-            "thread_id": thread_id,
-            "message": request.message,
-            "execution_mode": request.execution_mode.value,
-            "requested_task_type": request.task_type,
-            "requested_agent_type": request.agent_type,
-            "parameters": request.parameters,
-        }
-        config = {"configurable": {"thread_id": thread_id}}
-
-        final_values: dict = {}
-        terminal: TaskEvent | None = None
+        # 每任务初始化 web 调用预算：同一次任务内的所有 web 工具调用
+        # （含子代理内部的调用）共享此预算，超限后工具返回错误字典。
+        budget_token = set_web_call_budget(self._web_call_limit)
         try:
-            async with asyncio.timeout(self._timeout):
-                async for chunk in self._graph.astream(
-                    graph_input,
-                    config,
-                    stream_mode=("custom", "values"),
-                ):
-                    if isinstance(chunk, dict) and "pending_event" in chunk:
-                        pending = PendingEvent(**chunk["pending_event"])
-                        yield sequencer.next(pending.type, pending.data)
-                    elif isinstance(chunk, dict):
-                        final_values = chunk
-        except TimeoutError:
-            terminal = sequencer.next(
-                EventType.TASK_FAILED,
-                {"code": ErrorCode.EXECUTION_FAILED.value, "reason": "task timeout"},
-            )
-            yield terminal
-            return
-        except AppError as error:
-            terminal = sequencer.next(
-                EventType.TASK_FAILED,
-                {"code": error.code.value, "reason": error.public_message},
-            )
-            yield terminal
-            return
-        except Exception:
-            terminal = sequencer.next(
-                EventType.TASK_FAILED,
-                {"code": ErrorCode.INTERNAL_ERROR.value, "reason": "internal error"},
-            )
-            yield terminal
-            return
+            graph_input: AgentState = {
+                "task_id": task_id,
+                "thread_id": thread_id,
+                "message": request.message,
+                "execution_mode": request.execution_mode.value,
+                "requested_task_type": request.task_type,
+                "requested_agent_type": request.agent_type,
+                "parameters": request.parameters,
+            }
+            config = {"configurable": {"thread_id": thread_id}}
 
-        if final_values.get("error"):
-            err = final_values["error"]
+            final_values: dict = {}
+            terminal: TaskEvent | None = None
+            try:
+                async with asyncio.timeout(self._timeout):
+                    async for chunk in self._graph.astream(
+                        graph_input,
+                        config,
+                        stream_mode=("custom", "values"),
+                    ):
+                        if isinstance(chunk, dict) and "pending_event" in chunk:
+                            pending = PendingEvent(**chunk["pending_event"])
+                            yield sequencer.next(pending.type, pending.data)
+                        elif isinstance(chunk, dict):
+                            final_values = chunk
+            except TimeoutError:
+                terminal = sequencer.next(
+                    EventType.TASK_FAILED,
+                    {"code": ErrorCode.EXECUTION_FAILED.value, "reason": "task timeout"},
+                )
+                yield terminal
+                return
+            except AppError as error:
+                terminal = sequencer.next(
+                    EventType.TASK_FAILED,
+                    {"code": error.code.value, "reason": error.public_message},
+                )
+                yield terminal
+                return
+            except Exception:
+                terminal = sequencer.next(
+                    EventType.TASK_FAILED,
+                    {"code": ErrorCode.INTERNAL_ERROR.value, "reason": "internal error"},
+                )
+                yield terminal
+                return
+
+            if final_values.get("error"):
+                err = final_values["error"]
+                terminal = sequencer.next(
+                    EventType.TASK_FAILED,
+                    {
+                        "code": err.get("code", ErrorCode.EXECUTION_FAILED.value),
+                        "reason": err.get("message", "execution failed"),
+                    },
+                )
+                yield terminal
+                return
+
+            result = final_values.get("result") or {}
+            selected_mode = final_values.get("selected_mode") or SelectedMode.DEEP_AGENT.value
+            selected_executor_type = final_values.get("selected_executor_type")
+            task_type = (
+                selected_executor_type if selected_mode == SelectedMode.WORKFLOW.value else None
+            )
+            agent_type = (
+                selected_executor_type if selected_mode == SelectedMode.DEEP_AGENT.value else None
+            )
+            route_reason = final_values.get("route_reason") or ""
             terminal = sequencer.next(
-                EventType.TASK_FAILED,
+                EventType.TASK_COMPLETED,
                 {
-                    "code": err.get("code", ErrorCode.EXECUTION_FAILED.value),
-                    "reason": err.get("message", "execution failed"),
+                    "selected_mode": selected_mode,
+                    "task_type": task_type,
+                    "agent_type": agent_type,
+                    "route_reason": route_reason,
+                    "result": result,
                 },
             )
             yield terminal
-            return
-
-        result = final_values.get("result") or {}
-        selected_mode = final_values.get("selected_mode") or SelectedMode.DEEP_AGENT.value
-        selected_executor_type = final_values.get("selected_executor_type")
-        task_type = selected_executor_type if selected_mode == SelectedMode.WORKFLOW.value else None
-        agent_type = (
-            selected_executor_type if selected_mode == SelectedMode.DEEP_AGENT.value else None
-        )
-        route_reason = final_values.get("route_reason") or ""
-        terminal = sequencer.next(
-            EventType.TASK_COMPLETED,
-            {
-                "selected_mode": selected_mode,
-                "task_type": task_type,
-                "agent_type": agent_type,
-                "route_reason": route_reason,
-                "result": result,
-            },
-        )
-        yield terminal
+        finally:
+            reset_web_call_budget(budget_token)
 
     async def invoke(self, request: TaskRequest) -> TaskResponse:
         """消费 stream()，并返回校验后的任务完成结果。

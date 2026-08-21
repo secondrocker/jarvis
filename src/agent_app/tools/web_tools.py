@@ -7,10 +7,16 @@
   这是有意为之——langchain ToolNode 默认仅把参数校验失败转为模型可见的错误
   消息，其余异常会原样穿出图边界导致整个任务 EXECUTION_FAILED；返回错误字典
   才能让模型在网关偶发故障时换查询、调小 max_chars 或放弃该 URL 继续任务。
+
+Agent 面还实施全任务级调用预算（见 web_budget.py）：web_search/web_fetch
+为 async 工具，执行前在事件循环线程内扣减 contextvar 预算，超限返回
+错误字典促使模型收敛；同步网关调用经线程池下发，不阻塞事件循环。
 """
 
+import functools
 from typing import Any
 
+import anyio
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from langchain_core.tools import BaseTool, tool
@@ -19,6 +25,7 @@ from pydantic import ValidationError
 from agent_app.errors import AppError
 from agent_app.infrastructure.web_gateway import WebGatewayClient
 from agent_app.schemas.web_tools import WebFetchInput, WebSearchInput
+from agent_app.tools.web_budget import budget_exceeded_payload, consume_web_call
 
 
 def register_web_tools(
@@ -86,6 +93,10 @@ def _as_agent_error(error: AppError) -> dict[str, Any]:
 def create_web_agent_tools(client: WebGatewayClient) -> list[BaseTool]:
     """构造注入 Deep Agent 的 Web 搜索/抓取 langchain 工具。
 
+    工具为 async 形式：每次执行前在事件循环线程内扣减全任务预算
+    （contextvar，由 TaskService 初始化；未初始化时不限制），超限
+    返回错误字典促使模型收敛。
+
     参数:
         client: 执行搜索与抓取的 Web 网关客户端。
 
@@ -94,26 +105,34 @@ def create_web_agent_tools(client: WebGatewayClient) -> list[BaseTool]:
     """
 
     @tool(args_schema=WebSearchInput)
-    def web_search(query: str, limit: int = 5) -> dict[str, Any]:
+    async def web_search(query: str, limit: int = 5) -> dict[str, Any]:
         """搜索互联网信息。
 
         需要了解时事、查资料或验证事实但不知道具体页面地址时使用；
         已知具体 URL 时改用 web_fetch。
         """
+        if not consume_web_call():
+            return budget_exceeded_payload()
         try:
-            return client.search(query=query, limit=limit)
+            return await anyio.to_thread.run_sync(
+                functools.partial(client.search, query=query, limit=limit)
+            )
         except AppError as error:
             return _as_agent_error(error)
 
     @tool(args_schema=WebFetchInput)
-    def web_fetch(url: str, max_chars: int = 20000) -> dict[str, Any]:
+    async def web_fetch(url: str, max_chars: int = 20000) -> dict[str, Any]:
         """抓取指定 URL 的网页正文。
 
         已知具体页面地址、需要阅读其完整内容时使用；
         只有关键词没有 URL 时改用 web_search。
         """
+        if not consume_web_call():
+            return budget_exceeded_payload()
         try:
-            return client.fetch(url=url, max_chars=max_chars)
+            return await anyio.to_thread.run_sync(
+                functools.partial(client.fetch, url=url, max_chars=max_chars)
+            )
         except AppError as error:
             return _as_agent_error(error)
 

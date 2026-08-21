@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from langchain.agents.middleware.tool_call_limit import ToolCallLimitMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
@@ -15,7 +16,13 @@ from agent_app.tools.chart_tools import create_chart_agent_tools
 from agent_app.tools.web_tools import create_web_agent_tools
 
 # 本 agent 的技能源（backend 内虚拟路径 → 磁盘 skill_root 下同名子目录）。
+# 注意：source 须为容器目录，技能为其一级子目录（SDK 按此扫描 SKILL.md）。
 _SKILL_SOURCES: list[tuple[str, str]] = [("/skills/info-price/", "Info Price")]
+
+# 主图对 task 工具的调用次数上限：防止主代理反复派生 researcher 导致
+# web 渠道（由 web_budget 全任务级限流）被反复压满后仍在空转。限 2 次
+# 覆盖正常流程（researcher 1 次 + analyst 1 次）+ 少量余量。
+_TASK_RUN_LIMIT = 2
 
 
 def create_info_price_agent(
@@ -53,4 +60,11 @@ def create_info_price_agent(
             web_tools=create_web_agent_tools(web_client) if web_client else None,
             chart_tools=create_chart_agent_tools(storage),
         ),
+        middleware=[
+            ToolCallLimitMiddleware(
+                tool_name="task",
+                run_limit=_TASK_RUN_LIMIT,
+                exit_behavior="continue",
+            ),
+        ],
     )
