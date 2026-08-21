@@ -17,17 +17,24 @@ class _FakeRuntime:
         self.input_received = None
         self.config_received = None
         self.stream_mode_received = None
+        self.subgraphs_received = None
 
-    async def astream(self, input, config, *, stream_mode):
+    async def astream(self, input, config, *, stream_mode, **kwargs):
         self.input_received = input
         self.config_received = config
         self.stream_mode_received = stream_mode
+        self.subgraphs_received = kwargs.get("subgraphs")
         for chunk in self._chunks:
             yield chunk
 
 
 def _msg_stream(message, *, checkpoint_ns="model:uuid-1"):
     return ("messages", (message, {"langgraph_checkpoint_ns": checkpoint_ns}))
+
+
+def _msg_stream_nested(namespace, message, *, checkpoint_ns="tools:uuid-1"):
+    """subgraphs=True 时子图消息的 chunk 形态：三元组。"""
+    return (namespace, "messages", (message, {"langgraph_checkpoint_ns": checkpoint_ns}))
 
 
 def _context(*, message="test", emit=lambda _: None, config=None):
@@ -108,7 +115,7 @@ async def test_adapter_raises_when_no_answer() -> None:
 @pytest.mark.asyncio
 async def test_adapter_maps_runtime_exception_to_execution_failed() -> None:
     class _ErroringRuntime:
-        async def astream(self, input, config, *, stream_mode):
+        async def astream(self, input, config, *, stream_mode, **kwargs):
             raise RuntimeError("internal failure")
             yield  # pragma: no cover — keeps this an async generator
 
@@ -120,13 +127,94 @@ async def test_adapter_maps_runtime_exception_to_execution_failed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_adapter_requests_list_stream_mode() -> None:
+async def test_adapter_requests_list_stream_mode_and_subgraphs() -> None:
     chunks = [_msg_stream(AIMessageChunk(content="answer"))]
     adapter = DeepAgentAdapter(runtime=_FakeRuntime(chunks))
     await adapter.run(_context())
     # langgraph 只在 stream_mode 为 list 时产出 (mode, payload) 元组。
     assert isinstance(adapter._runtime.stream_mode_received, list)
     assert adapter._runtime.stream_mode_received == ["messages", "updates"]
+    assert adapter._runtime.subgraphs_received is True
+
+
+@pytest.mark.asyncio
+async def test_adapter_filters_nested_subagent_text_but_keeps_tool_events() -> None:
+    """subgraphs=True 下，子代理文本不进入 answer；工具事件带 subagent 标注。"""
+    chunks = [
+        _msg_stream(AIMessageChunk(content="主代理思考")),
+        _msg_stream_nested(
+            ("tools:uuid-sub",),
+            AIMessageChunk(content="子代理中间文本"),
+        ),
+        _msg_stream_nested(
+            ("tools:uuid-sub",),
+            AIMessageChunk(
+                content="",
+                tool_calls=[{"name": "web_search", "args": {"q": "x"}, "id": "tc-1"}],
+            ),
+        ),
+        _msg_stream_nested(
+            ("tools:uuid-sub",),
+            ToolMessage(content="结果", name="web_search", tool_call_id="tc-1", status="success"),
+        ),
+        _msg_stream(AIMessageChunk(content="最终报告")),
+    ]
+    adapter = DeepAgentAdapter(runtime=_FakeRuntime(chunks))
+    emitted = []
+    result = await adapter.run(_context(emit=emitted.append))
+    assert result == {"answer": "主代理思考最终报告"}
+    types = [e.type for e in emitted]
+    assert EventType.TOOL_STARTED in types
+    assert EventType.TOOL_COMPLETED in types
+
+    subagent_started = [
+        e
+        for e in emitted
+        if e.type is EventType.TOOL_STARTED and e.data.get("source") == "subagent"
+    ]
+    assert len(subagent_started) == 1
+    assert subagent_started[0].data["tool_name"] == "web_search"
+
+    subagent_completed = [
+        e
+        for e in emitted
+        if e.type is EventType.TOOL_COMPLETED and e.data.get("source") == "subagent"
+    ]
+    assert len(subagent_completed) == 1
+    assert subagent_completed[0].data["tool_name"] == "web_search"
+
+    deltas = [e.data["delta"] for e in emitted if e.type is EventType.CONTENT_DELTA]
+    assert "".join(deltas) == "主代理思考最终报告"
+
+
+@pytest.mark.asyncio
+async def test_adapter_deduplicates_tool_started_by_tool_call_id() -> None:
+    """流式工具调用的多个 chunk 只应产生一个 tool.started。"""
+    chunks = [
+        _msg_stream(
+            AIMessageChunk(
+                content="",
+                tool_calls=[{"name": "read_file", "args": {}, "id": "tc-1"}],
+            )
+        ),
+        _msg_stream(
+            AIMessageChunk(
+                content="",
+                tool_calls=[{"name": "", "args": {"x": 1}, "id": "tc-1"}],
+            )
+        ),
+        _msg_stream(
+            ToolMessage(content="ok", name="read_file", tool_call_id="tc-1", status="success")
+        ),
+        _msg_stream(AIMessageChunk(content="done")),
+    ]
+    adapter = DeepAgentAdapter(runtime=_FakeRuntime(chunks))
+    emitted = []
+    result = await adapter.run(_context(emit=emitted.append))
+    assert result == {"answer": "done"}
+    started = [e for e in emitted if e.type is EventType.TOOL_STARTED]
+    assert len(started) == 1
+    assert started[0].data["tool_name"] == "read_file"
 
 
 @pytest.mark.asyncio
@@ -144,8 +232,9 @@ async def test_adapter_skips_updates_mode_payloads() -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_filters_nested_subagent_chunks() -> None:
+    # 子代理 LLM 中间输出：最后一段节点名为 tools:（task 工具执行内的嵌套模型）。
+    # 这里 subgraphs=False 形态仍应被兼容：子代理文本被过滤，task ToolMessage 保留。
     chunks = [
-        # 子代理 LLM 中间输出：最后一段节点名为 tools:（task 工具执行内的嵌套模型）。
         _msg_stream(
             AIMessageChunk(content="子代理中间输出"),
             checkpoint_ns="execute:uuid-exe|tools:uuid-tools",

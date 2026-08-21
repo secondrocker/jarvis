@@ -8,6 +8,7 @@ from agent_app.deep_agents.event_mapper import map_deep_agent_event
 from agent_app.deep_agents.protocols import DeepAgentRuntime
 from agent_app.errors import AppError, ErrorCode, normalize_execution_error
 from agent_app.orchestration.executors import ExecutionContext
+from agent_app.schemas.events import EventType
 
 
 def is_from_nested_graph(message: Any, metadata: Any) -> bool:
@@ -40,6 +41,18 @@ def is_from_nested_graph(message: Any, metadata: Any) -> bool:
     return ns.rsplit("|", 1)[-1].startswith("tools:")
 
 
+def _is_nested_chunk(namespace: tuple[str, ...]) -> bool:
+    """subgraphs=True 时，非空 namespace 表示消息来自子图（task 工具内）。"""
+    return bool(namespace)
+
+
+def _message_has_tool_activity(message: Any) -> bool:
+    """消息包含工具调用或工具结果（放行子代理工具事件但不放行文本）。"""
+    if isinstance(message, (AIMessage, AIMessageChunk)):
+        return bool(message.tool_calls)
+    return type(message).__name__ == "ToolMessage"
+
+
 class DeepAgentAdapter:
     """运行受限 Deep Agent，并将输出映射为项目事件。"""
 
@@ -66,28 +79,50 @@ class DeepAgentAdapter:
         agent_input: dict[str, Any] = {"messages": list(context.messages)}
 
         answer_parts: list[str] = []
+        seen_tool_call_ids: set[str] = set()
         try:
             # 注意：多流模式必须传 list。langgraph 的 `_output()` 仅在
             # `isinstance(stream_mode, list)` 时产出 `(mode, payload)` 元组，
-            # 传 tuple 会退化为裸 payload，导致按模式分发时解包失败。
-            async for stream_mode, chunk_data in self._runtime.astream(
+            # 传 tuple 会退化为裸 payload，导致按模式分发时解包崩溃。
+            # subgraphs=True 把嵌套子图（子代理）的消息也拉到顶层流，
+            # 我们才能把子代理内部的工具调用事件透传给客户端。
+            async for item in self._runtime.astream(
                 agent_input,
                 context.config,
                 stream_mode=["messages", "updates"],
+                subgraphs=True,
             ):
+                namespace, stream_mode, chunk_data = self._unpack_stream_item(item)
                 if stream_mode != "messages":
                     continue
                 msg, metadata = chunk_data
-                if is_from_nested_graph(msg, metadata):
-                    # 防御：子代理（task 工具调度的嵌套图）的中间输出不进入
-                    # answer 与事件流。当前 subgraphs=False 时嵌套块本就不会
-                    # 泄露到顶层流，此处只防御 deepagents/langgraph 升级改变
-                    # 该语义。
+                nested = _is_nested_chunk(namespace)
+                if nested and not _message_has_tool_activity(msg):
+                    # 子代理中间文本不进入 answer 与事件流。
                     continue
-                event = map_deep_agent_event(msg)
-                if event is not None:
+                if not nested and is_from_nested_graph(msg, metadata):
+                    # 防御：当 subgraphs 语义回退到旧形态时，仍用 ns 过滤子代理文本。
+                    continue
+
+                events = map_deep_agent_event(msg)
+                if events is None:
+                    continue
+                for event in events:
+                    if nested and event.type is EventType.CONTENT_DELTA:
+                        continue
+                    if nested and event.type in (
+                        EventType.TOOL_STARTED,
+                        EventType.TOOL_COMPLETED,
+                    ):
+                        event.data["source"] = "subagent"
+                    if event.type is EventType.TOOL_STARTED:
+                        tool_call_id = self._extract_tool_call_id(msg)
+                        if tool_call_id and tool_call_id in seen_tool_call_ids:
+                            continue
+                        if tool_call_id:
+                            seen_tool_call_ids.add(tool_call_id)
                     context.emit(event)
-                    if event.type is not None and "delta" in event.data:
+                    if not nested and event.type is not None and "delta" in event.data:
                         answer_parts.append(event.data["delta"])
         except AppError:
             raise
@@ -105,3 +140,29 @@ class DeepAgentAdapter:
                 "Deep Agent returned no answer",
             )
         return {"answer": answer}
+
+    @staticmethod
+    def _unpack_stream_item(item: Any) -> tuple[tuple[str, ...], str, Any]:
+        """兼容 subgraphs=False（二元组）与 True（三元组）的 chunk 形态。
+
+        返回值:
+            (namespace, stream_mode, payload)。subgraphs=False 时 namespace 为空元组。
+        """
+        if isinstance(item, tuple) and len(item) == 3:
+            namespace, stream_mode, chunk_data = item
+            return (
+                tuple(namespace) if isinstance(namespace, tuple) else (),
+                stream_mode,
+                chunk_data,
+            )
+        if isinstance(item, tuple) and len(item) == 2:
+            stream_mode, chunk_data = item
+            return (), stream_mode, chunk_data
+        raise ValueError(f"Unexpected stream item shape: {item!r}")
+
+    @staticmethod
+    def _extract_tool_call_id(message: Any) -> str | None:
+        """从消息中取出 tool_call id，用于对同一工具调用去重。"""
+        if isinstance(message, (AIMessage, AIMessageChunk)) and message.tool_calls:
+            return message.tool_calls[0].get("id")
+        return None

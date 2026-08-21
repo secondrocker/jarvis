@@ -21,8 +21,8 @@
                                     execute 节点
                               ┌──────────┴──────────┐
                               ▼                     ▼
-                          摘要子图          Deep Agent Runtime
-                       （结构化 LLM）         （受限 harness）
+                      固定 workflow 子图     Deep Agent Runtime
+                  （summary / pdf_to_image）   （受限 harness）
 ```
 
 workflow 与 Deep Agent 通过统一执行器协议注册到 `ExecutorRegistry`。`TaskRouter`
@@ -47,21 +47,22 @@ Deep Agent Runtime 受到严格限制：通过 `HarnessProfile` 排除了 `execu
 - Python 3.12
 - [uv](https://docs.astral.sh/uv/)（包管理器）
 - OpenAI API 密钥
+- S3 兼容对象存储（PDF 转图片 workflow 上传渲染产物用；仅用摘要/Deep Agent 路径时可不配）
 
 ## 安装
 
 ```bash
 make install                  # 执行 uv sync --all-groups
 
-cp .env.example .env          # 然后填入 API 密钥
-# OPENAI_API_KEY=sk-...
-# OPENAI_MODEL=gpt-5.6-sol
+cp config.example.yaml config.yaml   # 然后填入密钥（openai.api_key、s3 凭证等）
 ```
 
-`OPENAI_MODEL` 是路由器及未单独配置执行器时的默认模型。当前可通过
-`SUMMARY_MODEL` 和 `SOLUTION_PLANNING_MODEL` 分别为摘要 workflow 与方案规划
-agent 指定模型；未设置时各自回退到 `OPENAI_MODEL`。新增执行器时应在所属目录
-定义处选择自己的模型配置。
+应用配置统一从项目根 `config.yaml` 读取（`config.yaml` 仅本地保留，不入库）。
+`openai.model` 是路由器及未单独配置执行器时的默认模型；`openai.summary_model`
+与 `openai.solution_planning_model` 可分别覆盖摘要 workflow 与方案规划 agent，
+未设置时各自回退到 `openai.model`。另有 `s3`（PDF 产物上传的对象存储）、`mcp`
+（工具服务开关与挂载路径）、`task`、`log` 四段。新增执行器时应在所属目录定义处
+按需选择自己的模型配置。
 
 ## 运行
 
@@ -90,6 +91,11 @@ curl -s localhost:8000/api/v1/tasks/invoke \
 curl -s localhost:8000/api/v1/tasks/invoke \
   -H 'Content-Type: application/json' \
   -d '{"message":"为一个新产品制定分阶段发布方案","execution_mode":"deep_agent","agent_type":"solution_planning"}' | jq .
+
+# 显式调用 PDF 转图片工作流（message 为可下载的 PDF URL）
+curl -s localhost:8000/api/v1/tasks/invoke \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"https://example.com/sample.pdf","execution_mode":"workflow","task_type":"pdf_to_image"}' | jq .
 
 # 显式使用工作流并保持会话连续性
 curl -s localhost:8000/api/v1/tasks/invoke \
@@ -130,6 +136,10 @@ task.started → route.selected → node.started → node.completed → task.com
 
 执行失败时，终态事件为 `task.failed`，其中包含 `code` 和 `reason`。
 
+### MCP 工具
+
+应用通过 MCP（默认挂载 `/mcp`）把同样的工具能力以 Streamable HTTP 暴露出去，例如 `pdf_to_image`、`upload_from_url`、`get_download_url`、`get_upload_url`。MCP 可在 `config.yaml` 中通过 `mcp.enabled` 关闭。
+
 ## 测试
 
 ```bash
@@ -147,22 +157,23 @@ src/agent_app/
 ├── api/                  FastAPI 路由、SSE 编码器、依赖注入
 │   ├── routes/           健康检查、/invoke、/stream
 │   └── sse.py            SSE 文本格式化
-├── config.py             应用配置（pydantic-settings）
+├── config.py             从 config.yaml 读取的层级配置（pydantic 模型）
 ├── deep_agents/          Deep Agent 目录、受限适配器、工厂、事件映射器
 ├── errors.py             AppError、ErrorCode、HTTP 状态映射
-├── infrastructure/       检查点存储、LLM 工厂
+├── infrastructure/       检查点存储、LLM 工厂、对象存储（S3）封装
 ├── logging.py            structlog 配置
-├── main.py               应用工厂与服务装配
+├── main.py               应用工厂、服务装配、MCP 挂载
 ├── orchestration/        顶层 LangGraph 图、统一执行器协议、路由器、注册表、状态
-├── schemas/              任务/事件传输模型、EventSequencer
+├── schemas/              任务/事件/工具传输模型、EventSequencer
 ├── services/             TaskService（统一事件源）
 ├── skills/               Deep Agent 技能定义（solution_planning）
-└── workflows/            workflow 目录、统一适配器与固定子图（摘要）
+├── tools/                进程内工具实现 + 聚合 MCP 服务（PDF 转图片、对象存储）
+└── workflows/            workflow 统一适配器与固定子图（summary、pdf_to_image）
 ```
 
 ## 限制
 
 - **仅使用内存存储**：检查点存储（`MemorySaver`）和 Deep Agent 后端（`StateBackend`）均为进程内实例。进程重启后所有状态都会丢失。
 - **没有身份认证**：接口完全开放，请勿在缺少网关保护的情况下部署。
-- **当前执行器**：目前提供 `summary` workflow 与默认 `solution_planning` Deep Agent；新增执行器时在所属包的创建函数中登记即可。
+- **当前执行器**：提供 `summary`、`pdf_to_image` 两个 workflow 与默认 `solution_planning` Deep Agent；新增执行器时在所属包的创建函数中登记即可。
 - **Deep Agent 限制**：不能执行 Shell 命令，也不能调度子代理。

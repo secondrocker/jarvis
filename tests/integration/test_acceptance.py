@@ -53,7 +53,7 @@ class _FakeRouterModel:
 class _FakeDeepAgentRuntime:
     """只产生一个答案块的 Deep Agent 运行时替身。"""
 
-    async def astream(self, input, config, *, stream_mode):
+    async def astream(self, input, config, *, stream_mode, **kwargs):
         from langchain_core.messages import AIMessageChunk
 
         yield ("messages", (AIMessageChunk(content="这是一个发布方案"), {}))

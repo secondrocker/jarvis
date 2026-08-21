@@ -82,14 +82,17 @@ async def test_skills_loaded_from_disk_into_system_prompt(tmp_path, captured_pro
         model=model,
         checkpointer=MemorySaver(),
         skill_root=tmp_path,
-        skill_sources=[("/skills/demo-skill/", "Demo Skill")],
+        # source 须为容器目录（技能是其一级子目录），指向技能目录本身注入为空。
+        skill_sources=[("/skills/", "Demo Skill")],
     )
     await runtime.ainvoke(
         {"messages": [HumanMessage(content="你好")]},
         config={"configurable": {"thread_id": "t-skills"}},
     )
     assert "## Skills System" in captured_prompt["system"]
-    assert "demo-skill" in captured_prompt["system"]
+    # 断言技能条目本身（而非 source 路径行），防止"注入为空"被路径子串误命中掩盖。
+    assert "- **demo-skill**: Demo skill for tests." in captured_prompt["system"]
+    assert "Read `/skills/demo-skill/SKILL.md`" in captured_prompt["system"]
 
 
 @pytest.mark.asyncio

@@ -11,10 +11,33 @@ def test_ai_message_chunk_with_tool_calls_maps_to_tool_started() -> None:
         content="",
         tool_calls=[{"name": "write_todos", "args": {"todos": []}, "id": "tc-1"}],
     )
-    event = map_deep_agent_event(chunk)
-    assert event is not None
-    assert event.type is EventType.TOOL_STARTED
-    assert event.data == {"tool_name": "write_todos"}
+    events = map_deep_agent_event(chunk)
+    assert events is not None
+    assert events[0].type is EventType.TOOL_STARTED
+    assert events[0].data == {"tool_name": "write_todos"}
+
+
+def test_empty_tool_name_in_chunk_is_filtered() -> None:
+    """流式工具调用的中间分片 name 为空时不应产生空 tool_name 事件。"""
+    chunk = AIMessageChunk(
+        content="",
+        tool_calls=[{"name": "", "args": {}, "id": "tc-1"}],
+    )
+    assert map_deep_agent_event(chunk) is None
+
+
+def test_multiple_tool_calls_in_one_chunk_map_to_separate_events() -> None:
+    """同一 chunk 中多个非空工具调用应分别产生事件。"""
+    chunk = AIMessageChunk(
+        content="",
+        tool_calls=[
+            {"name": "read_file", "args": {}, "id": "tc-1"},
+            {"name": "write_todos", "args": {}, "id": "tc-2"},
+        ],
+    )
+    events = map_deep_agent_event(chunk)
+    assert events is not None
+    assert [e.data["tool_name"] for e in events] == ["read_file", "write_todos"]
 
 
 def test_tool_message_maps_to_tool_completed_success() -> None:
@@ -24,10 +47,10 @@ def test_tool_message_maps_to_tool_completed_success() -> None:
         tool_call_id="tc-1",
         status="success",
     )
-    event = map_deep_agent_event(message)
-    assert event is not None
-    assert event.type is EventType.TOOL_COMPLETED
-    assert event.data == {"tool_name": "write_todos", "status": "success"}
+    events = map_deep_agent_event(message)
+    assert events is not None
+    assert events[0].type is EventType.TOOL_COMPLETED
+    assert events[0].data == {"tool_name": "write_todos", "status": "success"}
 
 
 def test_failed_tool_message_maps_to_tool_completed_error() -> None:
@@ -37,18 +60,18 @@ def test_failed_tool_message_maps_to_tool_completed_error() -> None:
         tool_call_id="tc-2",
         status="error",
     )
-    event = map_deep_agent_event(message)
-    assert event is not None
-    assert event.type is EventType.TOOL_COMPLETED
-    assert event.data == {"tool_name": "write_file", "status": "error"}
+    events = map_deep_agent_event(message)
+    assert events is not None
+    assert events[0].type is EventType.TOOL_COMPLETED
+    assert events[0].data == {"tool_name": "write_file", "status": "error"}
 
 
 def test_ai_message_chunk_with_content_maps_to_content_delta() -> None:
     chunk = AIMessageChunk(content="这是方案的第一步")
-    event = map_deep_agent_event(chunk)
-    assert event is not None
-    assert event.type is EventType.CONTENT_DELTA
-    assert event.data == {"delta": "这是方案的第一步"}
+    events = map_deep_agent_event(chunk)
+    assert events is not None
+    assert events[0].type is EventType.CONTENT_DELTA
+    assert events[0].data == {"delta": "这是方案的第一步"}
 
 
 def test_unknown_message_type_is_ignored() -> None:
