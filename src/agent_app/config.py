@@ -51,6 +51,9 @@ class McpConfig(BaseModel):
 
     enabled: bool = True
     mount_path: str = "/mcp"
+    # Bearer token；配置后 MCP 端点要求 Authorization: Bearer <token> 请求头，
+    # 未配置则不做认证（保持向后兼容）。
+    token: SecretStr | None = None
 
 
 class WebGatewayConfig(BaseModel):

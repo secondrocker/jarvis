@@ -2,12 +2,14 @@
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi_offline import FastAPIOffline
 from fastmcp.utilities.lifespan import combine_lifespans
+from starlette.datastructures import Headers
 
 from agent_app.api.routes.health import router as health_router
 from agent_app.api.routes.tasks import router as tasks_router
@@ -109,8 +111,34 @@ def create_app(
     app.include_router(tasks_router)
 
     # 把工具能力通过聚合 MCP server（Streamable HTTP）暴露，供外部 client/agent 调用。
+    # 配置了 mcp.token 时，统一要求 Authorization: Bearer <token> 请求头。
     if mcp_app is not None:
-        app.mount(resolved_settings.mcp.mount_path, mcp_app)
+        mounted_app: Any = mcp_app
+        token = resolved_settings.mcp.token
+        if token is not None:
+            expected = f"Bearer {token.get_secret_value()}"
+
+            class _BearerAuthMiddleware:
+                """ASGI 中间件：校验 MCP 端点的 Bearer token。"""
+
+                def __init__(self, inner: Any) -> None:
+                    self._inner = inner
+
+                async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+                    if scope["type"] == "http":
+                        headers = Headers(scope=scope)
+                        if headers.get("authorization") != expected:
+                            response = JSONResponse(
+                                status_code=401,
+                                content={"detail": "Unauthorized"},
+                                headers={"WWW-Authenticate": "Bearer"},
+                            )
+                            await response(scope, receive, send)
+                            return
+                    await self._inner(scope, receive, send)
+
+            mounted_app = _BearerAuthMiddleware(mcp_app)
+        app.mount(resolved_settings.mcp.mount_path, mounted_app)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(

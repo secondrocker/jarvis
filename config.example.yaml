@@ -21,6 +21,7 @@ s3:
 mcp:
   enabled: true
   mount_path: /mcp
+  token: 替换为你的-mcp-token（openssl rand -hex 32 生成，留空则不启用认证）
 web_gateway:
   base_url: https://surf.leegoo.ltd
   api_token: 替换为你的-token
