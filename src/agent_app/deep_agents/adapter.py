@@ -42,8 +42,17 @@ def is_from_nested_graph(message: Any, metadata: Any) -> bool:
 
 
 def _is_nested_chunk(namespace: tuple[str, ...]) -> bool:
-    """subgraphs=True 时，非空 namespace 表示消息来自子图（task 工具内）。"""
-    return bool(namespace)
+    """subgraphs=True 时，判断消息是否产自子代理（task 工具内的嵌套图）。
+
+    Deep Agent 在编排图 execute 节点内运行时，内层 astream(subgraphs=True)
+    的 namespace 会被外层图节点前缀污染（如 ``execute:<uuid>``），不能简单
+    按“namespace 非空”判断。子代理经 task 工具调度，其 namespace 最内层
+    段以 ``tools:`` 开头；据此判断，与外层嵌套深度无关。
+    """
+    if not namespace:
+        return False
+    innermost = namespace[-1]
+    return innermost.rsplit("|", 1)[-1].startswith("tools:")
 
 
 def _message_has_tool_activity(message: Any) -> bool:
