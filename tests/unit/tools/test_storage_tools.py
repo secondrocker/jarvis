@@ -53,19 +53,19 @@ async def test_upload_from_url_returns_key_and_url(mcp_server, patch_download) -
 
 
 @pytest.mark.asyncio
-async def test_upload_from_url_uses_custom_prefix(mcp_server, patch_download) -> None:
+async def test_upload_from_url_uses_exact_key(mcp_server, patch_download) -> None:
     async with Client(mcp_server) as client:
         result = await client.call_tool(
             "upload_from_url",
             {
                 "source_url": "https://src.test/file",
                 "content_type": "application/pdf",
-                "key_prefix": "/reports/",
+                "key": "/reports/report.pdf",
             },
         )
 
-    assert result.data["key"].startswith("reports/")
-    assert result.data["url"].startswith("https://fake-s3.test/reports/")
+    assert result.data["key"] == "reports/report.pdf"
+    assert result.data["url"].startswith("https://fake-s3.test/reports/report.pdf")
 
 
 @pytest.mark.asyncio
@@ -108,15 +108,16 @@ async def test_get_upload_url_returns_presigned_put(mcp_server) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_upload_url_uses_custom_prefix(mcp_server) -> None:
+async def test_get_upload_url_uses_exact_key(mcp_server) -> None:
     async with Client(mcp_server) as client:
         result = await client.call_tool(
             "get_upload_url",
-            {"content_type": "application/pdf", "key_prefix": "reports"},
+            {"content_type": "application/pdf", "key": "reports/2026/report.pdf"},
         )
 
-    assert result.data["key"].startswith("reports/")
-    assert result.data["url"].startswith("https://fake-s3.test/reports/")
+    assert result.data["key"] == "reports/2026/report.pdf"
+    assert result.data["url"].startswith("https://fake-s3.test/reports/2026/report.pdf")
+    assert result.data["content_type"] == "application/pdf"
 
 
 @pytest.mark.asyncio

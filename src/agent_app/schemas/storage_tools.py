@@ -4,10 +4,10 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class StorageUploadOptions(BaseModel):
-    """对象存储上传的通用选项（content_type 与 key_prefix 规范化）。"""
+    """对象存储上传的通用选项（content_type 与 key 规范化）。"""
 
     content_type: str = Field(min_length=1)
-    key_prefix: str | None = None
+    key: str | None = None
 
     @field_validator("content_type")
     @classmethod
@@ -18,15 +18,15 @@ class StorageUploadOptions(BaseModel):
             raise ValueError("content_type is required")
         return stripped
 
-    @field_validator("key_prefix")
+    @field_validator("key")
     @classmethod
-    def normalize_key_prefix(cls, value: str | None) -> str:
-        """规范化前缀为非空、无首尾斜杠的字符串；缺省返回 uploads。"""
+    def normalize_key(cls, value: str | None) -> str | None:
+        """规范化对象 key 为非空、无首部斜杠的字符串；缺省返回 None（随机路径）。"""
         if value is None:
-            return "uploads"
-        stripped = value.strip().strip("/")
+            return None
+        stripped = value.strip().lstrip("/")
         if not stripped:
-            return "uploads"
+            raise ValueError("key must not be empty")
         return stripped
 
 

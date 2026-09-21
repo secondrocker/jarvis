@@ -64,17 +64,18 @@ def register_storage_tools(
     def upload_from_url(
         source_url: str,
         content_type: str,
-        key_prefix: str | None = None,
+        key: str | None = None,
     ) -> dict[str, Any]:
         """从远端 URL 下载字节并上传到对象存储，返回可下载 URL。
 
         source_url 为可下载的远端资源地址；content_type 写入对象元数据；
-        key_prefix 可选，用于组织 S3 key 前缀（缺省 uploads/）。
+        key 可选，为对象的完整存储路径（固定使用传入路径，不再追加随机段）；
+        缺省时生成随机路径 uploads/<uuid>。
 
         Args:
             source_url: 可下载的远端资源 URL。
             content_type: 写入对象的 Content-Type。
-            key_prefix: S3 key 前缀，默认 uploads。
+            key: 对象的完整 S3 key；缺省生成 uploads/<uuid>。
 
         返回值:
             含 key、url 的字典。
@@ -83,12 +84,12 @@ def register_storage_tools(
             payload = StorageUploadFromUrlInput(
                 source_url=source_url,
                 content_type=content_type,
-                key_prefix=key_prefix,
+                key=key,
             )
             data = _download(payload.source_url)
-            key = f"{payload.key_prefix}/{uuid4().hex}"
-            storage.put(data, key=key, content_type=payload.content_type)
-            return {"key": key, "url": storage.download_url(key)}
+            object_key = payload.key or f"uploads/{uuid4().hex}"
+            storage.put(data, key=object_key, content_type=payload.content_type)
+            return {"key": object_key, "url": storage.download_url(object_key)}
         except AppError as error:
             raise ToolError(error.public_message) from error
         except ValidationError as error:
@@ -119,16 +120,17 @@ def register_storage_tools(
     @mcp.tool
     def get_upload_url(
         content_type: str,
-        key_prefix: str | None = None,
+        key: str | None = None,
     ) -> dict[str, Any]:
         """生成可直接 PUT 上传字节的预签名 URL，供调用方直传 S3。
 
         content_type 会写入签名，调用方 PUT 时必须携带匹配的 ``Content-Type`` header。
-        key_prefix 可选，用于组织 S3 key 前缀（缺省 uploads/）。
+        key 可选，为对象的完整存储路径（固定使用传入路径，不再追加随机段）；
+        缺省时生成随机路径 uploads/<uuid>。
 
         Args:
             content_type: 签名绑定的 Content-Type。
-            key_prefix: S3 key 前缀，默认 uploads。
+            key: 对象的完整 S3 key；缺省生成 uploads/<uuid>。
 
         返回值:
             含 key、url、content_type 的字典。
@@ -136,12 +138,12 @@ def register_storage_tools(
         try:
             payload = StorageUploadUrlInput(
                 content_type=content_type,
-                key_prefix=key_prefix,
+                key=key,
             )
-            key = f"{payload.key_prefix}/{uuid4().hex}"
+            object_key = payload.key or f"uploads/{uuid4().hex}"
             return {
-                "key": key,
-                "url": storage.upload_url(key, content_type=payload.content_type),
+                "key": object_key,
+                "url": storage.upload_url(object_key, content_type=payload.content_type),
                 "content_type": payload.content_type,
             }
         except AppError as error:
