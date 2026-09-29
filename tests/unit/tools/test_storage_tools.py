@@ -19,9 +19,15 @@ class _FakeResponse:
 
 
 @pytest.fixture
-def mcp_server(test_settings):
+def fake_storage():
+    """可断言 delete/rename 调用记录的 fake 存储。"""
+    return FakeObjectStorage()
+
+
+@pytest.fixture
+def mcp_server(test_settings, fake_storage):
     """注入内存 fake 存储的聚合 MCP 服务实例。"""
-    return build_mcp_server(settings=test_settings, storage=FakeObjectStorage())
+    return build_mcp_server(settings=test_settings, storage=fake_storage)
 
 
 @pytest.fixture
@@ -125,3 +131,48 @@ async def test_get_upload_url_requires_content_type(mcp_server) -> None:
     async with Client(mcp_server) as client:
         with pytest.raises(ToolError):
             await client.call_tool("get_upload_url", {"content_type": "  "})
+
+
+@pytest.mark.asyncio
+async def test_delete_object_deletes_key(mcp_server, fake_storage) -> None:
+    async with Client(mcp_server) as client:
+        result = await client.call_tool(
+            "delete_object",
+            {"key": "/uploads/old.bin"},
+        )
+
+    assert result.data == {"key": "uploads/old.bin", "deleted": True}
+    assert fake_storage.deletes == ["uploads/old.bin"]
+
+
+@pytest.mark.asyncio
+async def test_delete_object_requires_key(mcp_server) -> None:
+    async with Client(mcp_server) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool("delete_object", {"key": "  "})
+
+
+@pytest.mark.asyncio
+async def test_rename_object_moves_path(mcp_server, fake_storage) -> None:
+    async with Client(mcp_server) as client:
+        result = await client.call_tool(
+            "rename_object",
+            {"source_key": "/uploads/tmp.bin", "target_key": "reports/final.bin"},
+        )
+
+    data = result.data
+    assert data["source_key"] == "uploads/tmp.bin"
+    assert data["target_key"] == "reports/final.bin"
+    assert data["url"] == "https://fake-s3.test/reports/final.bin"
+    assert fake_storage.renames == [("uploads/tmp.bin", "reports/final.bin")]
+
+
+@pytest.mark.asyncio
+async def test_rename_object_rejects_same_paths(mcp_server, fake_storage) -> None:
+    async with Client(mcp_server) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool(
+                "rename_object",
+                {"source_key": "a.bin", "target_key": "  "},
+            )
+    assert fake_storage.renames == []

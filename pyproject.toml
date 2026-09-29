@@ -23,6 +23,7 @@ dependencies = [
     "fastapi-offline>=1.7.7",
     "boto3",
     "matplotlib>=3.11.1",
+    "pillow>=10.2.0",
 ]
 
 [dependency-groups]

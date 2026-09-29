@@ -19,6 +19,7 @@ class OpenAIConfig(BaseModel):
     summary_model: str | None = Field(default=None, min_length=1)
     solution_planning_model: str | None = Field(default=None, min_length=1)
     info_price_model: str | None = Field(default=None, min_length=1)
+    grade_homework_model: str | None = Field(default=None, min_length=1)
     timeout_seconds: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=2, ge=0, le=5)
 
@@ -44,6 +45,7 @@ class S3Config(BaseModel):
     region: str = "us-east-1"
     bucket: str | None = None
     url_expires_seconds: int = Field(default=604800, gt=0)
+    public_domain: str | None = Field(default=None, description="公开访问域名，用于生成预签名 URL 时替换 endpoint 域名")
 
 
 class McpConfig(BaseModel):
@@ -90,6 +92,21 @@ class WebGatewayConfig(BaseModel):
         return self
 
 
+class GradeHomeworkConfig(BaseModel):
+    """批改作业工作流的图片限制配置。"""
+
+    max_image_mb: int = Field(default=8, ge=1)
+    max_image_edge: int = Field(default=2048, ge=256)
+
+
+class AuthConfig(BaseModel):
+    """批改小程序鉴权配置;access_password 为空表示开放访问。"""
+
+    access_password: str | None = None
+    secret: str = "dev-secret"
+    token_ttl_hours: int = Field(default=168, ge=1)
+
+
 class Settings(BaseModel):
     """从 config.yaml 读取的层级应用配置。"""
 
@@ -99,6 +116,8 @@ class Settings(BaseModel):
     s3: S3Config = Field(default_factory=S3Config)
     mcp: McpConfig = Field(default_factory=McpConfig)
     web_gateway: WebGatewayConfig = Field(default_factory=WebGatewayConfig)
+    grade_homework: GradeHomeworkConfig = Field(default_factory=GradeHomeworkConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
 
 
 def load_settings(path: str | Path = DEFAULT_CONFIG_PATH) -> Settings:

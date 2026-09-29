@@ -2,7 +2,8 @@
 
 底层 ObjectStorage（Boto3Storage）的字节接口不天然映射 MCP 参数，故上传采用 URL 中转：
 先下载远端字节再上传 S3，返回 {key, url}。get_download_url 独立暴露，用于刷新过期 URL；
-get_upload_url 返回预签名 PUT URL，供调用方直传字节到 S3。
+get_upload_url 返回预签名 PUT URL，供调用方直传字节到 S3；delete_object 删除对象；
+rename_object 重命名/移动对象路径（S3 语义为复制后删除源对象）。
 """
 
 from typing import Any
@@ -16,7 +17,9 @@ from pydantic import ValidationError
 from agent_app.errors import AppError, ErrorCode
 from agent_app.infrastructure.storage import ObjectStorage
 from agent_app.schemas.storage_tools import (
+    StorageDeleteInput,
     StorageDownloadUrlInput,
+    StorageRenameInput,
     StorageUploadFromUrlInput,
     StorageUploadUrlInput,
 )
@@ -111,6 +114,56 @@ def register_storage_tools(
         try:
             payload = StorageDownloadUrlInput(key=key)
             return {"key": payload.key, "url": storage.download_url(payload.key)}
+        except AppError as error:
+            raise ToolError(error.public_message) from error
+        except ValidationError as error:
+            detail = error.errors()[0]["msg"] if error.errors() else "Invalid storage parameters"
+            raise ToolError(str(detail)) from error
+
+    @mcp.tool
+    def delete_object(key: str) -> dict[str, Any]:
+        """删除对象存储中的指定对象。
+
+        key 为对象存储 key；删除操作幂等（对象不存在时同样视为成功）。
+
+        Args:
+            key: 待删除对象的 S3 key。
+
+        返回值:
+            含 key、deleted=True 的字典。
+        """
+        try:
+            payload = StorageDeleteInput(key=key)
+            storage.delete(payload.key)
+            return {"key": payload.key, "deleted": True}
+        except AppError as error:
+            raise ToolError(error.public_message) from error
+        except ValidationError as error:
+            detail = error.errors()[0]["msg"] if error.errors() else "Invalid storage parameters"
+            raise ToolError(str(detail)) from error
+
+    @mcp.tool
+    def rename_object(source_key: str, target_key: str) -> dict[str, Any]:
+        """重命名/移动对象存储中的对象路径。
+
+        把对象从 source_key 移动到 target_key（S3 语义为复制后删除源对象）。
+        源对象不存在时复制会失败并以 ToolError 报错。
+
+        Args:
+            source_key: 源对象的 S3 key。
+            target_key: 目标对象的 S3 key。
+
+        返回值:
+            含 source_key、target_key、url（新路径的预签名下载 URL）的字典。
+        """
+        try:
+            payload = StorageRenameInput(source_key=source_key, target_key=target_key)
+            storage.rename(payload.source_key, payload.target_key)
+            return {
+                "source_key": payload.source_key,
+                "target_key": payload.target_key,
+                "url": storage.download_url(payload.target_key),
+            }
         except AppError as error:
             raise ToolError(error.public_message) from error
         except ValidationError as error:

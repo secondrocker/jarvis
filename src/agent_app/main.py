@@ -11,6 +11,7 @@ from fastapi_offline import FastAPIOffline
 from fastmcp.utilities.lifespan import combine_lifespans
 from starlette.datastructures import Headers
 
+from agent_app.api.routes.grade import create_grade_upload_router, router as grade_router
 from agent_app.api.routes.health import router as health_router
 from agent_app.api.routes.tasks import router as tasks_router
 from agent_app.config import Settings, get_settings
@@ -93,6 +94,7 @@ def create_app(
         返回值:
             向 FastAPI 提供生命周期控制的异步上下文。
         """
+        app.state.settings = resolved_settings
         app.state.task_service = service or build_task_service(resolved_settings)
         lifespan_data["service"] = app.state.task_service
         yield
@@ -102,12 +104,15 @@ def create_app(
     fastapi_lifespan = lifespan
     if resolved_settings.mcp.enabled:
         tools_mcp = build_mcp_server(settings=resolved_settings)
-        mcp_app = tools_mcp.http_app(path="/")
+        # stateless 模式：不维护服务端 session，服务重启后客户端旧连接依然可用。
+        mcp_app = tools_mcp.http_app(path="/", stateless_http=True)
         fastapi_lifespan = combine_lifespans(lifespan, mcp_app.lifespan)
 
     # 使用 FastAPIOffline 自托管 Swagger/ReDoc 静态资源，避免依赖 cdn.jsdelivr.net。
     app = FastAPIOffline(title="Jarvis", version="0.1.0", lifespan=fastapi_lifespan)
     app.include_router(health_router)
+    app.include_router(grade_router)
+    app.include_router(create_grade_upload_router(resolved_settings))
     app.include_router(tasks_router)
 
     # 把工具能力通过聚合 MCP server（Streamable HTTP）暴露，供外部 client/agent 调用。

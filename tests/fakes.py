@@ -24,6 +24,8 @@ class FakeObjectStorage:
         """
         self.base_url = base_url
         self.uploads: list[tuple[str, str, int]] = []
+        self.deletes: list[str] = []
+        self.renames: list[tuple[str, str]] = []
 
     def put(self, data: bytes, *, key: str, content_type: str) -> None:
         """记录上传的 key、content_type 与字节数。
@@ -57,6 +59,23 @@ class FakeObjectStorage:
             形如 ``{base_url}/upload/{key}`` 的 fake URL。
         """
         return f"{self.base_url}/{key}"
+
+    def delete(self, key: str) -> None:
+        """记录删除的 key。
+
+        参数:
+            key: 对象 key。
+        """
+        self.deletes.append(key)
+
+    def rename(self, source_key: str, target_key: str) -> None:
+        """记录重命名调用的 (source_key, target_key)。
+
+        参数:
+            source_key: 源对象 key。
+            target_key: 目标对象 key。
+        """
+        self.renames.append((source_key, target_key))
 
 
 class ScriptedModel(BaseChatModel):

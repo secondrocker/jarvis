@@ -30,7 +30,12 @@ def test_build_task_service_selects_models_at_each_definition(
         return object()
 
     def create_summary_model(settings, *, model_name=None):
-        selected_models["summary"] = model_name or settings.openai.model
+        # workflows 模块的 create_chat_model 同时服务 summary 与 grade_homework:
+        # summary 传入专用模型名,grade_homework 未配置专用模型时为 None。
+        if model_name == "summary-specialized-model":
+            selected_models["summary"] = model_name
+        else:
+            selected_models["grade_homework"] = model_name or settings.openai.model
         return fake_summary_model
 
     def create_agent_model(settings, *, model_name=None):
@@ -58,6 +63,7 @@ def test_build_task_service_selects_models_at_each_definition(
     assert selected_models == {
         "router": "router-default-model",
         "summary": "summary-specialized-model",
+        "grade_homework": "router-default-model",
         "solution_planning": "planning-specialized-model",
         "info_price": "info-price-specialized-model",
     }

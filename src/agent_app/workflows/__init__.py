@@ -9,6 +9,7 @@ from agent_app.orchestration.executors import (
 )
 from agent_app.schemas.tasks import SelectedMode
 from agent_app.workflows.adapter import WorkflowExecutor
+from agent_app.workflows.grade_homework import GradeInput, build_grade_homework_graph
 from agent_app.workflows.pdf_to_image import PdfInput, build_pdf_to_image_graph
 from agent_app.workflows.summary import SummaryInput, build_summary_graph
 
@@ -26,6 +27,12 @@ def _prepare_pdf_input(context: ExecutionContext) -> dict:
     """
     payload = {**context.parameters, "url": context.message}
     return PdfInput.model_validate(payload).model_dump()
+
+
+def _prepare_grade_input(context: ExecutionContext) -> dict:
+    """把统一执行上下文转换为已校验的批改输入(message 为图片 URL)。"""
+    payload = {**context.parameters, "url": context.message}
+    return GradeInput.model_validate(payload).model_dump()
 
 
 def create_workflows(
@@ -49,7 +56,25 @@ def create_workflows(
         prepare_input=_prepare_pdf_input,
         invalid_parameters_message="Invalid PDF parameters",
     )
+    # getattr 容错: 单元测试用 SimpleNamespace 替身 settings,未必带新字段。
+    grade_model_name = getattr(settings.openai, "grade_homework_model", None)
+    grade_config = getattr(settings, "grade_homework", None)
+    grade_homework = WorkflowExecutor(
+        workflow=build_grade_homework_graph(
+            create_chat_model(settings, model_name=grade_model_name),
+            max_image_mb=getattr(grade_config, "max_image_mb", 8),
+            max_image_edge=getattr(grade_config, "max_image_edge", 2048),
+        ),
+        prepare_input=_prepare_grade_input,
+        invalid_parameters_message="Invalid grade homework parameters",
+    )
     return {
+        "grade_homework": ExecutorDefinition(
+            mode=SelectedMode.WORKFLOW,
+            description="Grade a homework photo: detect subject (math/chinese/english), "
+            "check handwritten answers step by step, verify math with an exact calculator",
+            executor=grade_homework,
+        ),
         "summary": ExecutorDefinition(
             mode=SelectedMode.WORKFLOW,
             description="Create a structured summary with key points",

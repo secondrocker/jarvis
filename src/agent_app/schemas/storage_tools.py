@@ -62,3 +62,41 @@ class StorageDownloadUrlInput(BaseModel):
         if not stripped:
             raise ValueError("key is required")
         return stripped
+
+
+class StorageDeleteInput(StorageDownloadUrlInput):
+    """删除对象接收的已校验输入。"""
+
+    @field_validator("key")
+    @classmethod
+    def normalize_key(cls, value: str) -> str:
+        """规范化删除 key 为非空、无首部斜杠的字符串。"""
+        stripped = value.strip().lstrip("/")
+        if not stripped:
+            raise ValueError("key is required")
+        return stripped
+
+
+class StorageRenameInput(BaseModel):
+    """重命名/移动对象接收的已校验输入。"""
+
+    source_key: str = Field(min_length=1)
+    target_key: str = Field(min_length=1)
+
+    @field_validator("source_key")
+    @classmethod
+    def normalize_source_key(cls, value: str) -> str:
+        """规范化源 key 为非空、无首部斜杠的字符串。"""
+        stripped = value.strip().lstrip("/")
+        if not stripped:
+            raise ValueError("source_key is required")
+        return stripped
+
+    @field_validator("target_key")
+    @classmethod
+    def normalize_target_key(cls, value: str) -> str:
+        """规范化目标 key 为非空、无首部斜杠的字符串。"""
+        stripped = value.strip().lstrip("/")
+        if not stripped:
+            raise ValueError("target_key is required")
+        return stripped

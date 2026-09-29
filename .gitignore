@@ -17,4 +17,4 @@ htmlcov/
 .vscode/
 .worktrees/
 .codegraph/
-.data/
+.data/jarvis.log

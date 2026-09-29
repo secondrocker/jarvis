@@ -36,11 +36,17 @@ async def test_create_workflows_returns_routable_executors(
     monkeypatch.setattr(workflows_mod, "create_chat_model", fake_create_chat_model)
 
     workflows = create_workflows(
-        settings=SimpleNamespace(openai=SimpleNamespace(summary_model="summary-specialized-model")),
+        settings=SimpleNamespace(
+            openai=SimpleNamespace(
+                summary_model="summary-specialized-model",
+                grade_homework_model=None,
+            ),
+            grade_homework=SimpleNamespace(max_image_mb=8, max_image_edge=2048),
+        ),
         storage=FakeObjectStorage(),
     )
 
-    assert set(workflows) == {"summary", "pdf_to_image"}
+    assert set(workflows) == {"summary", "pdf_to_image", "grade_homework"}
 
     summary = workflows["summary"]
     assert summary.mode is SelectedMode.WORKFLOW
@@ -52,8 +58,12 @@ async def test_create_workflows_returns_routable_executors(
     assert pdf.description
     assert pdf.is_default is False
 
-    # PDF 执行器不需要模型：模型仅按摘要专用配置创建一次。
-    assert selected_models == ["summary-specialized-model"]
+    # PDF 执行器不需要模型;批改执行器未配置专用模型时按 None 选择全局默认。
+    assert selected_models == ["summary-specialized-model", None]
+
+    grade = workflows["grade_homework"]
+    assert grade.mode is SelectedMode.WORKFLOW
+    assert grade.description
 
     result = await summary.executor.run(_context())
 
@@ -75,7 +85,10 @@ async def test_summary_executor_maps_invalid_parameters_to_app_error(
         lambda settings, *, model_name=None: fake_summary_model,
     )
     definition = create_workflows(
-        settings=SimpleNamespace(openai=SimpleNamespace(summary_model=None)),
+        settings=SimpleNamespace(
+            openai=SimpleNamespace(summary_model=None, grade_homework_model=None),
+            grade_homework=SimpleNamespace(max_image_mb=8, max_image_edge=2048),
+        ),
         storage=FakeObjectStorage(),
     )["summary"]
 

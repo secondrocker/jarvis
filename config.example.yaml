@@ -28,3 +28,11 @@ web_gateway:
   search_timeout_seconds: 15
   fetch_timeout_seconds: 40
   total_call_limit: 8
+# 作业批改(小程序)
+grade_homework:
+  max_image_mb: 8
+  max_image_edge: 2048
+auth:
+  access_password: homework-2024   # 留空/删除此段 = 开放访问
+  secret: change-me-64-hex
+  token_ttl_hours: 168
