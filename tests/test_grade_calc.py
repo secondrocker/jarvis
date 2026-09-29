@@ -11,6 +11,7 @@ from agent_app.workflows.grade_homework.calc import (
     evaluate,
     normalize,
     numbers_match,
+    numeric_value,
 )
 
 
@@ -52,6 +53,38 @@ def test_numbers_match():
     assert numbers_match(Fraction(5, 4), "5/4")
     assert numbers_match({"decimal": 1.25}, "5/4")
     assert not numbers_match(100, 99)
+
+
+def test_calc_one_ignores_trailing_unit():
+    # raw 原样保留单位,取第一个 "=" 前求值
+    assert calc_one("5-1=4（份）")["value"] == 4
+    assert calc_one("（156-12）÷（11+5）=144÷16=9（名）")["value"] == 9
+    assert calc_one("4×5+4=24（名）")["value"] == 24
+
+
+def test_numbers_match_with_units():
+    # 学生结果带单位(全/半角括号包住或直接缀后缀)时按纯数值比对
+    assert numbers_match(4, "4（份）")
+    assert numbers_match(24, "24（名）")
+    assert numbers_match(57, "57名")
+    assert numbers_match(9, "共9（名）")
+    assert numbers_match(0.5, "0.5小时")
+    assert numbers_match(Fraction(5, 4), "5/4（份）")
+    assert numbers_match("24名", 24)
+    assert numbers_match(0.5, "50%")
+    # 数值不同仍判不符
+    assert not numbers_match(24, "25（名）")
+    # 非单位后缀不剥离,交由上层按“无法复算”处理
+    assert not numbers_match(24, "24个苹果")
+    assert not numbers_match(24, "24（答案）")
+
+
+def test_numeric_value_unit_awareness():
+    assert numeric_value("4（份）") == 4.0
+    assert numeric_value("２４名") == 24.0
+    assert numeric_value("57（名）") == 57.0
+    assert numeric_value("四份") is None
+    assert numeric_value("第1步") is None
 
 
 def test_public_url_guard():

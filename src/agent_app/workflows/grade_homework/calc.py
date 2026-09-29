@@ -3,6 +3,8 @@
 兼容常见手写/印刷形式: ``* × x · ✕ ＊ / ÷ ： ／ - − ＋`` 全角数字、
 中文括号、分数、百分号、幂记号等;整数分数用 ``Fraction`` 精确计算,
 求值基于 ``ast`` 白名单,禁止任意代码。
+比对学生结果时支持“数值+单位”形式(如 ``24名``、``4（份）``、``0.5小时``),
+单位只影响展示,不参与数值相等判定。
 """
 
 from __future__ import annotations
@@ -47,6 +49,39 @@ _SUBS: list[tuple[str, str]] = [
 ]
 
 _WS = re.compile(r"\s+")
+
+# ---- “数值+单位”识别(比对学生带单位的 claimed 结果) ----
+
+# 全角数字/百分号 → 半角
+_FULLWIDTH = str.maketrans({chr(0xFF10 + i): str(i) for i in range(10)} | {"％": "%"})
+
+# 中文字单位白名单(量词 + 计量单位词素);按字符级校验,避免把普通文本误当单位剥离
+_CJK_UNIT_CHARS = frozenset(
+    # 量词
+    "份名个只条根支块片朵颗棵粒枚册本页行列张台辆艘架匹头群批次遍回趟顿场道句段篇首"
+    "幅扇间层排组套副滴点束盒瓶桶袋包箱筐盘碗杯双对串堆捆沓口岁题卷期档"
+    # 计量单位词素(长度/面积/质量/容积/时间/货币/其他)
+    "米分厘毫微千公里寸尺丈海平平方立亩顷克吨斤两升斗加仑秒时小天日周旬月年世纪刻"
+    "元角钱倍度摄氏华氏"
+)
+
+# 拉丁/符号单位白名单(按词校验,统一小写比较)
+_LATIN_UNITS = frozenset(
+    {"km", "cm", "mm", "dm", "kg", "mg", "ml", "min", "ms", "m", "g", "t", "l", "s", "h", "°"}
+)
+
+# 数值片段: 可带符号、小数、分数
+_NUM_TOKEN = r"[-+]?\d+(?:\.\d+)?(?:\s*/\s*[-+]?\d+(?:\.\d+)?)?"
+
+# 常见前导字(“共24名”“约5份”),避免把结果文本整串判为不可解析
+_LEAD_WORDS = r"(?:累计|总共|一共|等于|约为|约|共|答|是|为)?"
+
+# “前导字 + 数值 + 单位(全/半角括号包住,或直接缀在后面)”
+_NUM_UNIT_RE = re.compile(
+    "^" + _LEAD_WORDS + r"\s*(?P<num>" + _NUM_TOKEN + r")\s*"
+    r"(?:[（({\[【]\s*(?P<in_brackets>[^（）()\[\]{}【】]+?)\s*[）)}\]]"
+    r"|(?P<plain>\S+))?$"
+)
 
 _ALLOWED_BIN = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.FloorDiv, ast.Mod)
 _ALLOWED_UNARY = (ast.UAdd, ast.USub)
@@ -129,7 +164,10 @@ def _to_jsonable(value: Fraction | int | float) -> Any:
     if isinstance(value, Fraction):
         if value.denominator == 1:
             return value.numerator
-        return {"fraction": f"{value.numerator}/{value.denominator}", "decimal": round(float(value), 10)}
+        return {
+            "fraction": f"{value.numerator}/{value.denominator}",
+            "decimal": round(float(value), 10),
+        }
     return value
 
 
@@ -142,33 +180,64 @@ def calc_one(raw: str) -> dict[str, Any]:
     return {"raw": raw, "ok": True, "value": _to_jsonable(value)}
 
 
-def numbers_match(a: Any, b: Any, tol: float = 1e-9) -> bool:
-    """比较两个数值(或 Fraction/dict/分数字符串)是否相等。"""
+def _unit_ok(unit: str) -> bool:
+    """校验单位片段: 空单位合法;中文按字符白名单,拉丁按词白名单。"""
+    if not unit:
+        return True
+    if unit.isascii():
+        return unit.lower() in _LATIN_UNITS
+    return all(ch in _CJK_UNIT_CHARS for ch in unit)
 
-    def to_float(x: Any) -> float | None:
-        if isinstance(x, dict):
-            x = x.get("decimal", x.get("fraction"))
-        if isinstance(x, Fraction):
-            return float(x)
-        if isinstance(x, bool) or x is None:
-            return None
-        if isinstance(x, str):
-            stripped = x.strip()
-            if stripped.endswith("%"):
-                stripped = "(" + stripped[:-1] + "/100)"
+
+def _strip_unit_value(stripped: str) -> float | None:
+    """识别“数值+单位”形式(如 ``24名`` / ``4（份）`` / ``0.5小时``),返回数值;否则 None。"""
+    match = _NUM_UNIT_RE.match(stripped)
+    if not match:
+        return None
+    unit = (match.group("in_brackets") or match.group("plain") or "").strip()
+    if not _unit_ok(unit):
+        return None
+    try:
+        return float(Fraction(match.group("num").replace(" ", "")))
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def numeric_value(x: Any) -> float | None:
+    """把数值/Fraction/dict/字符串解析为 float;字符串支持百分数与“数值+单位”。
+
+    无法解析时返回 None,由调用方决定降级策略(不直接按字符串相等定性)。
+    """
+    if isinstance(x, dict):
+        x = x.get("decimal", x.get("fraction"))
+    if isinstance(x, Fraction):
+        return float(x)
+    if isinstance(x, bool) or x is None:
+        return None
+    if isinstance(x, str):
+        stripped = x.strip().translate(_FULLWIDTH)
+        if stripped.endswith("%"):
             try:
-                return float(Fraction(stripped.replace("×", "*").replace("÷", "/")))
+                return float(Fraction(stripped[:-1])) / 100.0
             except (ValueError, ZeroDivisionError):
-                try:
-                    return float(stripped)
-                except ValueError:
-                    return None
+                return None
         try:
-            return float(x)
-        except (TypeError, ValueError):
-            return None
+            return float(Fraction(stripped.replace("×", "*").replace("÷", "/")))
+        except (ValueError, ZeroDivisionError):
+            pass
+        try:
+            return float(stripped)
+        except ValueError:
+            return _strip_unit_value(stripped)
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
 
-    fa, fb = to_float(a), to_float(b)
+
+def numbers_match(a: Any, b: Any, tol: float = 1e-9) -> bool:
+    """比较两个数值(或 Fraction/dict/分数字符串/带单位字符串)是否相等。"""
+    fa, fb = numeric_value(a), numeric_value(b)
     if fa is None or fb is None:
         return str(a) == str(b)
     return abs(fa - fb) <= tol * max(1.0, abs(fa), abs(fb))

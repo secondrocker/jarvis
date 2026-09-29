@@ -21,6 +21,7 @@ from agent_app.workflows.grade_homework.calc import (
     assert_public_http_url,
     calc_one,
     numbers_match,
+    numeric_value,
 )
 from agent_app.workflows.grade_homework.prompts import (
     GRADE_SYSTEM_PROMPT,
@@ -127,7 +128,9 @@ def make_grade_llm_node(
 def _fix_stats(result: dict[str, Any]) -> dict[str, Any]:
     """以 questions 实际情况重算统计,防止模型数错。"""
     questions = result.get("questions") or []
-    correct = sum(1 for q in questions if q.get("verdict") == "correct" and q.get("result_correct") is True)
+    correct = sum(
+        1 for q in questions if q.get("verdict") == "correct" and q.get("result_correct") is True
+    )
     wrong = sum(1 for q in questions if q.get("verdict") == "wrong")
     total = len(questions)
     result["total_questions"] = total
@@ -143,7 +146,14 @@ def _fix_stats(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def verify_math(result: dict[str, Any]) -> dict[str, Any]:
-    """数学题用计算工具复算,不一致时以后端计算为准改写判定。"""
+    """数学题用计算工具复算,数值确不符时以后端计算为准改写判定。
+
+    expressions 复核产物 ``calc_verified`` 三态:
+    ``True`` 数值一致; ``False`` 确定不符(翻判为错); ``None`` 无法复算
+    (算式本身不可求值,或 claimed 非数值)——无法复算不作为翻判依据,
+    判定仍以模型的过程/结果判定为准。
+    claimed 带单位(如 ``24（名）``)按纯数值比对,不算不符。
+    """
     if result.get("subject") != "math":
         return result
     for question in result.get("questions") or []:
@@ -157,13 +167,14 @@ def verify_math(result: dict[str, Any]) -> dict[str, Any]:
             outcome = calc_one(str(raw))
             claimed = item.get("claimed")
             outcome["claimed"] = claimed
-            outcome["calc_verified"] = bool(
-                outcome.get("ok")
-                and claimed is not None
-                and numbers_match(outcome.get("value"), claimed)
-            )
+            if not outcome.get("ok") or claimed is None or numeric_value(claimed) is None:
+                # 算式不可求值或 claimed 非数值: 无法复算,不据此翻判
+                outcome["calc_verified"] = None
+                verified.append(outcome)
+                continue
+            outcome["calc_verified"] = numbers_match(outcome.get("value"), claimed)
             verified.append(outcome)
-            if outcome.get("ok") and claimed is not None and not outcome["calc_verified"]:
+            if not outcome["calc_verified"]:
                 previous = question.get("verdict")
                 question["result_correct"] = False
                 if previous == "correct":
