@@ -18,3 +18,8 @@ htmlcov/
 .worktrees/
 .codegraph/
 .data/jarvis.log
+
+# 本地运行产物
+dsh.log
+jarvis.log
+.server.pid

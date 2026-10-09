@@ -20,6 +20,9 @@ class OpenAIConfig(BaseModel):
     solution_planning_model: str | None = Field(default=None, min_length=1)
     info_price_model: str | None = Field(default=None, min_length=1)
     grade_homework_model: str | None = Field(default=None, min_length=1)
+    # 批改模型的独立端点覆盖(可选);未配置时沿用全局 api_key/base_url。
+    grade_homework_base_url: str | None = Field(default=None, min_length=1)
+    grade_homework_api_key: SecretStr | None = None
     timeout_seconds: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=2, ge=0, le=5)
 
@@ -45,7 +48,9 @@ class S3Config(BaseModel):
     region: str = "us-east-1"
     bucket: str | None = None
     url_expires_seconds: int = Field(default=604800, gt=0)
-    public_domain: str | None = Field(default=None, description="公开访问域名，用于生成预签名 URL 时替换 endpoint 域名")
+    public_domain: str | None = Field(
+        default=None, description="公开访问域名，用于生成预签名 URL 时替换 endpoint 域名"
+    )
 
 
 class McpConfig(BaseModel):
@@ -92,6 +97,35 @@ class WebGatewayConfig(BaseModel):
         return self
 
 
+class ImageGenConfig(BaseModel):
+    """Gemini 图像生成服务（gemini-web2api 反代）配置。
+
+    base_url 与 api_key 必须同时配置或同时缺省；缺省时不注册图像生成
+    MCP 工具（与 web_gateway 的装配哲学一致）。
+    """
+
+    base_url: str | None = None
+    api_key: SecretStr | None = None
+    model: str = Field(default="gemini-image", min_length=1)
+    timeout_seconds: float = Field(default=180.0, gt=0)
+
+    @field_validator("base_url")
+    @classmethod
+    def normalize_base_url(cls, value: str | None) -> str | None:
+        """去除首尾空白与尾斜杠；空白字符串视为未配置。"""
+        if value is None:
+            return None
+        stripped = value.strip().rstrip("/")
+        return stripped or None
+
+    @model_validator(mode="after")
+    def check_url_token_pair(self) -> "ImageGenConfig":
+        """base_url 与 api_key 必须同时配置或同时缺省。"""
+        if (self.base_url is None) != (self.api_key is None):
+            raise ValueError("image_gen.base_url and image_gen.api_key must be configured together")
+        return self
+
+
 class GradeHomeworkConfig(BaseModel):
     """批改作业工作流的图片限制配置。"""
 
@@ -117,6 +151,7 @@ class Settings(BaseModel):
     mcp: McpConfig = Field(default_factory=McpConfig)
     web_gateway: WebGatewayConfig = Field(default_factory=WebGatewayConfig)
     grade_homework: GradeHomeworkConfig = Field(default_factory=GradeHomeworkConfig)
+    image_gen: ImageGenConfig = Field(default_factory=ImageGenConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
 
 
