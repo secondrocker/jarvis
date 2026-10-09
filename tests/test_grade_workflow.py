@@ -84,7 +84,7 @@ MOCK_LLM_RESULT = {
 async def test_grade_llm_then_calc_verify_corrects_llm_mistake():
     model = FakeGradeModel(MOCK_LLM_RESULT)
     grade = make_grade_llm_node(model)  # type: ignore[arg-type]
-    state: dict[str, Any] = {"image_b64": "eHg="}
+    state: dict[str, Any] = {"images_b64": ["eHg="]}
     update = await grade(state)
     assert update["result"]["subject"] == "math"
     assert len(update["result"]["questions"]) == 3
@@ -112,9 +112,56 @@ async def test_full_graph_with_fetched_image(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(httpx, "get", fake_get)
     graph = build_grade_homework_graph(FakeGradeModel(MOCK_LLM_RESULT))  # type: ignore[arg-type]
-    final = await graph.ainvoke({"url": "https://example.com/hw.jpg"})
+    final = await graph.ainvoke({"urls": ["https://example.com/hw.jpg"]})
     assert final["result"]["questions"][1]["verdict"] == "wrong"
     assert final["result"]["correct_count"] == 2
+
+
+async def test_full_graph_multi_image_cross_page(monkeypatch: pytest.MonkeyPatch):
+    """跨页: 同一作业两张连续图一次提交,fetch 逐张下载,LLM 收到两张图。"""
+    from agent_app.workflows.grade_homework import build_grade_homework_graph
+
+    def fake_get(url: str, **_: Any) -> httpx.Response:
+        return httpx.Response(200, content=_jpeg_bytes(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    model = FakeGradeModel(MOCK_LLM_RESULT)
+    graph = build_grade_homework_graph(model)  # type: ignore[arg-type]
+    final = await graph.ainvoke(
+        {"urls": ["https://example.com/hw-1.jpg", "https://example.com/hw-2.jpg"]}
+    )
+    assert final["result"]["correct_count"] == 2
+    # LLM 消息里应包含两张 image_url 分块 + 含图片数量的提示词
+    messages = model.runnable.calls[0]
+    human = messages[-1]
+    image_parts = [p for p in human.content if p.get("type") == "image_url"]
+    text_part = [p for p in human.content if p.get("type") == "text"][0]
+    assert len(image_parts) == 2
+    assert "2" in text_part["text"] and "跨图" in text_part["text"]
+
+
+def test_prepare_grade_input_splits_multi_urls():
+    """invoke message 携带空白/逗号分隔的多个 URL 时应拆为 urls 列表。"""
+    from types import SimpleNamespace
+
+    from agent_app.workflows import _prepare_grade_input
+
+    context = SimpleNamespace(
+        message="https://a.com/1.jpg,\nhttps://a.com/2.jpg  https://a.com/3.jpg",
+        parameters={},
+    )
+    prepared = _prepare_grade_input(context)
+    assert prepared == {"urls": [
+        "https://a.com/1.jpg", "https://a.com/2.jpg", "https://a.com/3.jpg"
+    ]}
+
+
+def test_grade_input_accepts_legacy_single_url():
+    from agent_app.workflows.grade_homework.schemas import GradeInput
+
+    assert GradeInput.model_validate({"url": "https://a.com/1.jpg"}).urls == [
+        "https://a.com/1.jpg"
+    ]
 
 
 def test_fetch_rejects_private_address():
@@ -123,7 +170,7 @@ def test_fetch_rejects_private_address():
 
     fetch = make_fetch_image_node()
     with pytest.raises(AppError):
-        fetch({"url": "http://127.0.0.1:8000/hw.jpg"})
+        fetch({"urls": ["http://127.0.0.1:8000/hw.jpg"]})
 
 
 def _math_question(expressions: list[dict[str, Any]]) -> dict[str, Any]:

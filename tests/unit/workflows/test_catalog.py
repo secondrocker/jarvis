@@ -29,7 +29,7 @@ async def test_create_workflows_returns_routable_executors(
 ) -> None:
     selected_models = []
 
-    def fake_create_chat_model(settings, *, model_name=None):
+    def fake_create_chat_model(settings, *, model_name=None, base_url=None, api_key=None):
         selected_models.append(model_name)
         return fake_summary_model
 
@@ -82,7 +82,7 @@ async def test_summary_executor_maps_invalid_parameters_to_app_error(
     monkeypatch.setattr(
         workflows_mod,
         "create_chat_model",
-        lambda settings, *, model_name=None: fake_summary_model,
+        lambda settings, *, model_name=None, base_url=None, api_key=None: fake_summary_model,
     )
     definition = create_workflows(
         settings=SimpleNamespace(

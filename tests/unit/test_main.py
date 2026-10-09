@@ -29,7 +29,7 @@ def test_build_task_service_selects_models_at_each_definition(
         selected_models["router"] = model_name or settings.openai.model
         return object()
 
-    def create_summary_model(settings, *, model_name=None):
+    def create_summary_model(settings, *, model_name=None, base_url=None, api_key=None):
         # workflows 模块的 create_chat_model 同时服务 summary 与 grade_homework:
         # summary 传入专用模型名,grade_homework 未配置专用模型时为 None。
         if model_name == "summary-specialized-model":

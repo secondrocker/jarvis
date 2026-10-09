@@ -2,7 +2,7 @@
 
 from typing import Any, Literal, TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ExpressionItem(BaseModel):
@@ -55,14 +55,28 @@ class GradeResult(BaseModel):
 
 
 class GradeInput(BaseModel):
-    """工作流输入: 可下载的作业图片 URL。"""
+    """工作流输入: 同一份作业的一张或多张图片 URL(跨页拍摄时连续多图)。
 
-    url: str
+    兼容旧契约: 传入单个 ``url`` 字符串时自动转为单元素列表。
+    """
+
+    urls: list[str] = Field(min_length=1, max_length=4)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_url(cls, data: Any) -> Any:
+        """接受旧的 ``url: str`` 单图输入,以及裸列表。"""
+        if isinstance(data, str):
+            return {"urls": [data]}
+        if isinstance(data, dict) and "urls" not in data and data.get("url"):
+            data = dict(data)
+            return {**data, "urls": [data.pop("url")]}
+        return data
 
 
 class GradeState(TypedDict, total=False):
     """在批改图中流转的状态。"""
 
-    url: str
-    image_b64: str
+    urls: list[str]
+    images_b64: list[str]
     result: dict[str, Any]

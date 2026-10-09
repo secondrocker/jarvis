@@ -1,5 +1,7 @@
 """创建应用可用的全部固定 LangGraph 工作流。"""
 
+import re
+
 from agent_app.config import Settings
 from agent_app.infrastructure.llm import create_chat_model
 from agent_app.infrastructure.storage import ObjectStorage, create_object_storage
@@ -30,8 +32,12 @@ def _prepare_pdf_input(context: ExecutionContext) -> dict:
 
 
 def _prepare_grade_input(context: ExecutionContext) -> dict:
-    """把统一执行上下文转换为已校验的批改输入(message 为图片 URL)。"""
-    payload = {**context.parameters, "url": context.message}
+    """把统一执行上下文转换为已校验的批改输入。
+
+    ``message`` 为一个或多个图片 URL(空白/逗号分隔,跨页作业多图一次提交)。
+    """
+    urls = [u for u in re.split(r"[\s,]+", context.message.strip()) if u]
+    payload = {**context.parameters, "urls": urls}
     return GradeInput.model_validate(payload).model_dump()
 
 
@@ -61,7 +67,15 @@ def create_workflows(
     grade_config = getattr(settings, "grade_homework", None)
     grade_homework = WorkflowExecutor(
         workflow=build_grade_homework_graph(
-            create_chat_model(settings, model_name=grade_model_name),
+            create_chat_model(
+                settings,
+                model_name=grade_model_name,
+                base_url=getattr(settings.openai, "grade_homework_base_url", None),
+                api_key=(
+                    getattr(settings.openai, "grade_homework_api_key", None)
+                    and settings.openai.grade_homework_api_key.get_secret_value()
+                ),
+            ),
             max_image_mb=getattr(grade_config, "max_image_mb", 8),
             max_image_edge=getattr(grade_config, "max_image_edge", 2048),
         ),

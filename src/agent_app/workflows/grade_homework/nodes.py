@@ -40,10 +40,9 @@ def make_fetch_image_node(
     max_edge: int = 2048,
     timeout_seconds: float = 30.0,
 ) -> Callable[[GradeState], dict[str, Any]]:
-    """返回下载图片并兜底压缩为 JPEG base64 的同步节点。"""
+    """返回逐张下载图片并兜底压缩为 JPEG base64 列表的同步节点。"""
 
-    def fetch_image(state: GradeState) -> dict[str, Any]:
-        url = state.get("url", "")
+    def _fetch_one(url: str) -> str:
         try:
             assert_public_http_url(url)
         except CalcError as error:
@@ -67,7 +66,13 @@ def make_fetch_image_node(
             image.save(buffer, "JPEG", quality=85)
         except Exception as error:  # noqa: BLE001 - 统一转为参数错误
             raise AppError(ErrorCode.INVALID_PARAMETERS, f"cannot decode image: {error}") from error
-        return {"image_b64": base64.b64encode(buffer.getvalue()).decode()}
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    def fetch_image(state: GradeState) -> dict[str, Any]:
+        urls = state.get("urls") or ([state["url"]] if state.get("url") else [])
+        if not urls:
+            raise AppError(ErrorCode.INVALID_PARAMETERS, "grade_homework: no image url")
+        return {"images_b64": [_fetch_one(url) for url in urls]}
 
     return fetch_image
 
@@ -75,21 +80,23 @@ def make_fetch_image_node(
 def make_grade_llm_node(
     model: BaseChatModel,
 ) -> Callable[[GradeState], Awaitable[dict[str, Any]]]:
-    """返回调用 vision 模型结构化批改的异步节点。"""
+    """返回调用 vision 模型结构化批改的异步节点(支持同作业多张连续图片)。"""
     structured = model.with_structured_output(GradeResult)
 
-    def _messages(image_b64: str) -> list[Any]:
+    def _messages(images_b64: list[str]) -> list[Any]:
+        parts: list[dict[str, Any]] = [
+            {"type": "text", "text": GRADE_USER_PROMPT % len(images_b64)}
+        ]
+        for image_b64 in images_b64:
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                }
+            )
         return [
             SystemMessage(content=GRADE_SYSTEM_PROMPT),
-            HumanMessage(
-                content=[
-                    {"type": "text", "text": GRADE_USER_PROMPT},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
-                    },
-                ]
-            ),
+            HumanMessage(content=parts),
         ]
 
     def _fallback_parse(text: str) -> GradeResult:
@@ -104,16 +111,16 @@ def make_grade_llm_node(
         return GradeResult.model_validate(payload)
 
     async def grade_llm(state: GradeState) -> dict[str, Any]:
-        image_b64 = state.get("image_b64", "")
-        if not image_b64:
+        images_b64 = state.get("images_b64") or []
+        if not images_b64:
             raise AppError(ErrorCode.EXECUTION_FAILED, "grade_llm: missing image")
         # 首选结构化输出;网关不支持 function call 时退回原始文本解析。
         try:
-            result: GradeResult = await structured.ainvoke(_messages(image_b64))
+            result: GradeResult = await structured.ainvoke(_messages(images_b64))
         except Exception as structured_error:  # noqa: BLE001
             logger.warning("structured output failed, falling back: %s", structured_error)
             try:
-                raw = await model.ainvoke(_messages(image_b64))
+                raw = await model.ainvoke(_messages(images_b64))
                 result = _fallback_parse(raw.text)
             except Exception as error:  # noqa: BLE001
                 raise AppError(
