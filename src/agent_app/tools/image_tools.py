@@ -259,7 +259,9 @@ def register_image_tools(
             aspect_ratio: 画面比例（宽:高），可选。
 
         返回值:
-            含 key、url（首张图）、images（全部图的 key/url 列表）的字典。
+            含 key、url（首张图）、prompt、aspect_ratio、images 的字典；
+            images 为全部上传图（最多 4 张）的列表，每项含 key、url、source
+            （内嵌 base64 为 "inline"，外链为原始 URL）。
         """
         try:
             params = ImageGenerateInput(prompt=prompt, aspect_ratio=aspect_ratio)

@@ -72,13 +72,13 @@ def register_storage_tools(
         """从远端 URL 下载字节并上传到对象存储，返回可下载 URL。
 
         source_url 为可下载的远端资源地址；content_type 写入对象元数据；
-        key 可选，为对象的完整存储路径（固定使用传入路径，不再追加随机段）；
-        缺省时生成随机路径 uploads/<uuid>。
+        key 可选，为对象的完整存储路径（去除首部斜杠后固定使用传入路径，
+        不再追加随机段）；缺省时生成随机路径 uploads/<uuid4 hex>。
 
         Args:
             source_url: 可下载的远端资源 URL。
             content_type: 写入对象的 Content-Type。
-            key: 对象的完整 S3 key；缺省生成 uploads/<uuid>。
+            key: 对象的完整 S3 key；缺省生成 uploads/<uuid4 hex>。
 
         返回值:
             含 key、url 的字典。
@@ -178,12 +178,12 @@ def register_storage_tools(
         """生成可直接 PUT 上传字节的预签名 URL，供调用方直传 S3。
 
         content_type 会写入签名，调用方 PUT 时必须携带匹配的 ``Content-Type`` header。
-        key 可选，为对象的完整存储路径（固定使用传入路径，不再追加随机段）；
-        缺省时生成随机路径 uploads/<uuid>。
+        key 可选，为对象的完整存储路径（去除首部斜杠后固定使用传入路径，
+        不再追加随机段）；缺省时生成随机路径 uploads/<uuid4 hex>。
 
         Args:
             content_type: 签名绑定的 Content-Type。
-            key: 对象的完整 S3 key；缺省生成 uploads/<uuid>。
+            key: 对象的完整 S3 key；缺省生成 uploads/<uuid4 hex>。
 
         返回值:
             含 key、url、content_type 的字典。

@@ -66,7 +66,7 @@ def register_web_tools(
     def web_fetch(url: str, max_chars: int = 20000) -> dict[str, Any]:
         """通过外部 Web 网关抓取网页正文。
 
-        url 为目标网页地址；max_chars 可选，限制返回正文字符数（默认 20000）。
+        url 为目标网页地址；max_chars 可选，限制返回正文字符数（1-50000，默认 20000）。
 
         Args:
             url: 目标网页地址。
