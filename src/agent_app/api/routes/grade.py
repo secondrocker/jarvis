@@ -7,8 +7,8 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from pydantic import BaseModel
 from PIL import Image
+from pydantic import BaseModel
 
 from agent_app.api.grade_auth import issue_token, make_require_auth
 from agent_app.config import Settings
@@ -58,7 +58,9 @@ def create_grade_upload_router(settings: Settings) -> APIRouter:
     storage = create_object_storage(settings.s3)
     max_mb = settings.grade_homework.max_image_mb
 
-    @upload_router.post("/upload", response_model=UploadResponse, summary="上传作业图片,返回可下载 URL")
+    @upload_router.post(
+        "/upload", response_model=UploadResponse, summary="上传作业图片,返回可下载 URL"
+    )
     async def upload_image(
         file: UploadFile = File(...),
         _: dict = Depends(require_auth),

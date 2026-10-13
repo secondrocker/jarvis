@@ -151,17 +151,15 @@ def test_prepare_grade_input_splits_multi_urls():
         parameters={},
     )
     prepared = _prepare_grade_input(context)
-    assert prepared == {"urls": [
-        "https://a.com/1.jpg", "https://a.com/2.jpg", "https://a.com/3.jpg"
-    ]}
+    assert prepared == {
+        "urls": ["https://a.com/1.jpg", "https://a.com/2.jpg", "https://a.com/3.jpg"]
+    }
 
 
 def test_grade_input_accepts_legacy_single_url():
     from agent_app.workflows.grade_homework.schemas import GradeInput
 
-    assert GradeInput.model_validate({"url": "https://a.com/1.jpg"}).urls == [
-        "https://a.com/1.jpg"
-    ]
+    assert GradeInput.model_validate({"url": "https://a.com/1.jpg"}).urls == ["https://a.com/1.jpg"]
 
 
 def test_fetch_rejects_private_address():

@@ -11,7 +11,8 @@ from fastapi_offline import FastAPIOffline
 from fastmcp.utilities.lifespan import combine_lifespans
 from starlette.datastructures import Headers
 
-from agent_app.api.routes.grade import create_grade_upload_router, router as grade_router
+from agent_app.api.routes.grade import create_grade_upload_router
+from agent_app.api.routes.grade import router as grade_router
 from agent_app.api.routes.health import router as health_router
 from agent_app.api.routes.tasks import router as tasks_router
 from agent_app.config import Settings, get_settings
