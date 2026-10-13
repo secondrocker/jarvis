@@ -212,3 +212,20 @@ async def test_mcp_server_omits_tool_without_config(fake_storage) -> None:
     async with Client(server) as client:
         tools = await client.list_tools()
     assert "generate_image" not in {tool.name for tool in tools}
+
+
+@pytest.mark.asyncio
+async def test_generate_image_preserves_signed_url_in_all_mcp_fields(
+    image_settings, fake_storage, patch_generation, monkeypatch
+) -> None:
+    """生成图片的顶层及 images 列表在 MCP 两种响应中均保留签名编码。"""
+    import json
+
+    expected = "https://public.test/b/image.jpg?Signature=fake%2B%2F%3D&Expires=123"
+    monkeypatch.setattr(fake_storage, "download_url", lambda key: expected)
+    server = build_mcp_server(settings=image_settings, storage=fake_storage)
+    async with Client(server) as client:
+        result = await client.call_tool("generate_image", {"prompt": "an abstract pattern"})
+    for data in (result.data, result.structured_content, json.loads(result.content[0].text)):
+        assert data["url"] == expected
+        assert all(image["url"] == expected for image in data["images"])

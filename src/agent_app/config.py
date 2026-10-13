@@ -49,7 +49,7 @@ class S3Config(BaseModel):
     bucket: str | None = None
     url_expires_seconds: int = Field(default=604800, gt=0)
     public_domain: str | None = Field(
-        default=None, description="公开访问域名，用于生成预签名 URL 时替换 endpoint 域名"
+        default=None, description="公开访问端点，在此端点直接签名；不带协议时默认 HTTPS"
     )
 
 

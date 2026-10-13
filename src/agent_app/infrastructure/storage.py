@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from pydantic import SecretStr
 
@@ -53,36 +54,19 @@ class Boto3Storage:
     依赖注入 client 以便单测替换；上传/取 URL 失败统一映射为 ``UPSTREAM_UNAVAILABLE``。
     """
 
-    def __init__(self, *, client: Any, bucket: str | None, expires_in: int, public_domain: str | None = None) -> None:
-        """绑定 boto3 client、bucket 与预签名有效期。
-
-        参数:
-            client: 已构造的 boto3 S3 client（测试可注入记录型替身）。
-            bucket: 目标 bucket 名；允许为 None 以支持延迟配置。
-            expires_in: 预签名 URL 的有效秒数。
-            public_domain: 公开访问域名，用于生成预签名 URL 时替换 endpoint 域名。
-        """
+    def __init__(
+        self,
+        *,
+        client: Any,
+        bucket: str | None,
+        expires_in: int,
+        signing_client: Any | None = None,
+    ) -> None:
+        """绑定内部操作 client 与公开端点签名 client，签名后不再修改 URL。"""
         self._client = client
+        self._signing_client = signing_client if signing_client is not None else client
         self._bucket = bucket
         self._expires_in = expires_in
-        self._public_domain = public_domain.rstrip("/") if public_domain else None
-
-    def _rewrite_url(self, url: str) -> str:
-        """如果配置了 public_domain，将 URL 的域名替换为 public_domain。
-
-        参数:
-            url: boto3 生成的原始预签名 URL。
-
-        返回值:
-            替换域名后的 URL（如果配置了 public_domain），否则返回原 URL。
-        """
-        if not self._public_domain:
-            return url
-        from urllib.parse import urlparse, urlunparse
-        parsed = urlparse(url)
-        # 替换 netloc (domain:port) 为 public_domain
-        new_parsed = parsed._replace(netloc=self._public_domain.replace("https://", "").replace("http://", ""))
-        return urlunparse(new_parsed)
 
     def put(self, data: bytes, *, key: str, content_type: str) -> None:
         """上传字节到 ``bucket/key``，失败映射为安全的 ``UPSTREAM_UNAVAILABLE``。
@@ -112,15 +96,15 @@ class Boto3Storage:
             key: 对象 key。
 
         返回值:
-            带签名、可在 ``expires_in`` 内下载的 URL（域名已按 public_domain 重写）。
+            带签名、可在 ``expires_in`` 内下载的 URL（直接按访问端点签名）。
         """
         try:
-            url = self._client.generate_presigned_url(
+            url = self._signing_client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self._bucket, "Key": key},
                 ExpiresIn=self._expires_in,
             )
-            return self._rewrite_url(url)
+            return url
         except ClientError as error:
             raise AppError(
                 ErrorCode.UPSTREAM_UNAVAILABLE,
@@ -201,10 +185,10 @@ class Boto3Storage:
             content_type: 签名绑定的 Content-Type。
 
         返回值:
-            带签名、可在 ``expires_in`` 内执行 PUT 上传的 URL（域名已按 public_domain 重写）。
+            带签名、可在 ``expires_in`` 内执行 PUT 上传的 URL（直接按访问端点签名）。
         """
         try:
-            url = self._client.generate_presigned_url(
+            url = self._signing_client.generate_presigned_url(
                 "put_object",
                 Params={
                     "Bucket": self._bucket,
@@ -213,7 +197,7 @@ class Boto3Storage:
                 },
                 ExpiresIn=self._expires_in,
             )
-            return self._rewrite_url(url)
+            return url
         except ClientError as error:
             raise AppError(
                 ErrorCode.UPSTREAM_UNAVAILABLE,
@@ -233,18 +217,27 @@ def create_object_storage(s3: S3Config) -> ObjectStorage:
     返回值:
         基于 s3 配置的 ``Boto3Storage``。
     """
-    client = boto3.session.Session().client(
-        "s3",
-        endpoint_url=s3.endpoint_url,
-        region_name=s3.region,
-        aws_access_key_id=_secret(s3.access_key),
-        aws_secret_access_key=_secret(s3.secret_key),
-    )
+    session = boto3.session.Session()
+    options = {
+        "region_name": s3.region,
+        "aws_access_key_id": _secret(s3.access_key),
+        "aws_secret_access_key": _secret(s3.secret_key),
+        # 显式固定 SigV4，避免 boto3 的预签名回退改用旧版签名。
+        "config": Config(signature_version="s3v4"),
+    }
+    client = session.client("s3", endpoint_url=s3.endpoint_url, **options)
+    signing_client = client
+    if s3.public_domain:
+        # 公开域名本身是签名端点，协议和 Host 都必须在签名前确定。
+        endpoint = s3.public_domain.rstrip("/")
+        if "://" not in endpoint:
+            endpoint = f"https://{endpoint}"
+        signing_client = session.client("s3", endpoint_url=endpoint, **options)
     return Boto3Storage(
         client=client,
+        signing_client=signing_client,
         bucket=s3.bucket,
         expires_in=s3.url_expires_seconds,
-        public_domain=s3.public_domain,
     )
 
 

@@ -225,3 +225,25 @@ async def test_list_objects_empty_directory(mcp_server, fake_storage) -> None:
     assert data["path"] == "nothing/here/"
     assert data["keys"] == []
     assert data["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_download_url_preserves_signature_in_mcp_content_and_data(test_settings) -> None:
+    """MCP 文本及结构化响应均保留签名 URL，不脱敏、不解码也不重编码。"""
+    import json
+
+    from agent_app.infrastructure.storage import Boto3Storage
+
+    expected = "https://public.test/b/a%20b.jpg?Signature=fake%2B%2F%3D&Expires=123"
+
+    class SigningClient:
+        def generate_presigned_url(self, *args, **kwargs):
+            return expected
+
+    storage = Boto3Storage(client=SigningClient(), bucket="b", expires_in=300)
+    server = build_mcp_server(settings=test_settings, storage=storage)
+    async with Client(server) as client:
+        result = await client.call_tool("get_download_url", {"key": "a b.jpg"})
+    assert result.data["url"] == expected
+    assert result.structured_content["url"] == expected
+    assert json.loads(result.content[0].text)["url"] == expected
