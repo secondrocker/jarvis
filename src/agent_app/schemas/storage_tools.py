@@ -1,6 +1,6 @@
 """对象存储 MCP 工具的已校验输入契约。"""
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class StorageUploadOptions(BaseModel):
@@ -116,3 +116,111 @@ class StorageRenameInput(BaseModel):
         if not stripped:
             raise ValueError("target_key is required")
         return stripped
+
+
+class StorageMovePair(BaseModel):
+    """批量移动中单个对象的源/目标映射。"""
+
+    source_key: str = Field(min_length=1)
+    target_key: str = Field(min_length=1)
+
+    @field_validator("source_key")
+    @classmethod
+    def normalize_source_key(cls, value: str) -> str:
+        """规范化源 key 为非空、无首部斜杠的字符串。"""
+        stripped = value.strip().lstrip("/")
+        if not stripped:
+            raise ValueError("source_key is required")
+        return stripped
+
+    @field_validator("target_key")
+    @classmethod
+    def normalize_target_key(cls, value: str) -> str:
+        """规范化目标 key 为非空、无首部斜杠的字符串。"""
+        stripped = value.strip().lstrip("/")
+        if not stripped:
+            raise ValueError("target_key is required")
+        return stripped
+
+
+class StorageBatchMoveInput(BaseModel):
+    """批量移动接收的已校验输入：前缀（目录级）模式或显式映射模式二选一。"""
+
+    source_path: str | None = None
+    target_path: str | None = None
+    moves: list[StorageMovePair] | None = None
+
+    @field_validator("source_path")
+    @classmethod
+    def normalize_source_path(cls, value: str | None) -> str | None:
+        """规范化源路径为无首部斜杠、带尾部斜杠的目录前缀；空字符串表示根。"""
+        if value is None:
+            return None
+        return StorageListInput.normalize_path(value)
+
+    @field_validator("target_path")
+    @classmethod
+    def normalize_target_path(cls, value: str | None) -> str | None:
+        """规范化目标路径；空字符串表示移动到 bucket 根目录。"""
+        if value is None:
+            return None
+        return StorageListInput.normalize_path(value)
+
+    @model_validator(mode="after")
+    def require_exactly_one_mode(self) -> "StorageBatchMoveInput":
+        """校验前缀模式与映射模式互斥且必须提供其一。"""
+        if self.moves is not None and self.source_path is not None:
+            raise ValueError("moves and source_path are mutually exclusive")
+        if self.moves is not None:
+            if not self.moves:
+                raise ValueError("moves must not be empty")
+            return self
+        if self.source_path is None:
+            raise ValueError("either moves or source_path is required")
+        if self.target_path is None:
+            raise ValueError("target_path is required with source_path")
+        return self
+
+
+class StorageBatchDeleteInput(BaseModel):
+    """批量删除接收的已校验输入：路径（前缀）模式或显式 key 列表模式二选一。"""
+
+    path: str | None = None
+    keys: list[str] | None = None
+    force: bool = False
+
+    @field_validator("path")
+    @classmethod
+    def normalize_path(cls, value: str | None) -> str | None:
+        """规范化路径为无首部斜杠、带尾部斜杠的目录前缀；空字符串表示根。"""
+        if value is None:
+            return None
+        return StorageListInput.normalize_path(value)
+
+    @field_validator("keys")
+    @classmethod
+    def normalize_keys(cls, value: list[str] | None) -> list[str] | None:
+        """规范化每个 key 为非空、无首部斜杠的字符串并去重（保持顺序）。"""
+        if value is None:
+            return None
+        normalized: list[str] = []
+        for raw in value:
+            stripped = raw.strip().lstrip("/")
+            if not stripped:
+                raise ValueError("keys must not contain empty entries")
+            if stripped not in normalized:
+                normalized.append(stripped)
+        return normalized
+
+    @model_validator(mode="after")
+    def require_exactly_one_mode(self) -> "StorageBatchDeleteInput":
+        """校验路径模式与列表模式互斥且必须提供其一，列表不允许为空。"""
+        if self.keys is not None and self.path is not None:
+            raise ValueError("keys and path are mutually exclusive")
+        if self.keys is not None:
+            if not self.keys:
+                raise ValueError("keys must not be empty")
+            return self
+        if self.path is None:
+            raise ValueError("either keys or path is required")
+        return self

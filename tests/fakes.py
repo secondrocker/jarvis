@@ -10,6 +10,8 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import BaseTool
 
+from agent_app.errors import AppError, ErrorCode
+from agent_app.infrastructure.storage import ObjectEntry
 from agent_app.workflows.summary.schemas import SummaryResult
 
 
@@ -27,6 +29,7 @@ class FakeObjectStorage:
         self.deletes: list[str] = []
         self.renames: list[tuple[str, str]] = []
         self.objects: set[str] = set()
+        self._blobs: dict[str, bytes] = {}
 
     def put(self, data: bytes, *, key: str, content_type: str) -> None:
         """记录上传的 key、content_type 与字节数。
@@ -38,6 +41,7 @@ class FakeObjectStorage:
         """
         self.uploads.append((key, content_type, len(data)))
         self.objects.add(key)
+        self._blobs[key] = data
 
     def download_url(self, key: str) -> str:
         """返回基于 key 的稳定 fake 下载 URL。
@@ -70,28 +74,41 @@ class FakeObjectStorage:
         """
         self.deletes.append(key)
         self.objects.discard(key)
+        self._blobs.pop(key, None)
 
     def rename(self, source_key: str, target_key: str) -> None:
-        """记录重命名调用的 (source_key, target_key)。
+        """记录重命名调用的 (source_key, target_key)；源缺失时抛 AppError。
 
         参数:
             source_key: 源对象 key。
             target_key: 目标对象 key。
+
+        异常:
+            AppError: 源对象不存在时抛 UPSTREAM_UNAVAILABLE（与生产语义一致）。
         """
         self.renames.append((source_key, target_key))
+        if source_key not in self.objects:
+            raise AppError(ErrorCode.UPSTREAM_UNAVAILABLE, "Source object is missing")
         self.objects.discard(source_key)
         self.objects.add(target_key)
+        blob = self._blobs.pop(source_key, None)
+        if blob is not None:
+            self._blobs[target_key] = blob
 
-    def list(self, prefix: str) -> list[str]:
-        """返回 fake 对象集合中前缀匹配的 key（排序以模拟 S3 字典序）。
+    def list(self, prefix: str) -> list[ObjectEntry]:
+        """返回 fake 对象集合中前缀匹配的条目（排序以模拟 S3 字典序）。
 
         参数:
             prefix: 对象 key 前缀。
 
         返回值:
-            前缀匹配的 key 列表。
+            前缀匹配的 ObjectEntry 列表（size 取已记录字节数，缺省 0）。
         """
-        return sorted(key for key in self.objects if key.startswith(prefix))
+        return [
+            ObjectEntry(key=key, size=len(self._blobs.get(key, b"")))
+            for key in sorted(self.objects)
+            if key.startswith(prefix)
+        ]
 
 
 class ScriptedModel(BaseChatModel):

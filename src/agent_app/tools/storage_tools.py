@@ -4,7 +4,8 @@
 先下载远端字节再上传 S3，返回 {key, url}。get_download_url 独立暴露，用于刷新过期 URL；
 get_upload_url 返回预签名 PUT URL，供调用方直传字节到 S3；delete_object 删除对象；
 rename_object 重命名/移动对象路径（S3 语义为复制后删除源对象）；
-list_objects 列出指定路径（前缀）下的全部对象及其文件名。
+list_objects 列出指定路径（前缀）下的全部对象及其元数据；
+move_objects/delete_objects 提供批量移动与批量删除（尽力而为 + 逐项结果汇总）。
 """
 
 from typing import Any
@@ -18,6 +19,8 @@ from pydantic import ValidationError
 from agent_app.errors import AppError, ErrorCode
 from agent_app.infrastructure.storage import ObjectStorage
 from agent_app.schemas.storage_tools import (
+    StorageBatchDeleteInput,
+    StorageBatchMoveInput,
     StorageDeleteInput,
     StorageDownloadUrlInput,
     StorageListInput,
@@ -28,6 +31,9 @@ from agent_app.schemas.storage_tools import (
 
 # 下载远端源的最大等待秒数（与 pdf/io.py 一致）。
 DOWNLOAD_TIMEOUT = 30.0
+
+# 批量删除的默认数量上限；超过时必须显式 force=True 才会执行。
+BATCH_DELETE_LIMIT = 100
 
 
 def _download(url: str) -> bytes:
@@ -209,7 +215,7 @@ def register_storage_tools(
 
     @mcp.tool
     def list_objects(path: str = "") -> dict[str, Any]:
-        """列出对象存储中指定路径下的全部对象，返回文件名列表。
+        """列出对象存储中指定路径下的全部对象，返回文件名与元数据列表。
 
         path 为目录语义的存储路径（S3 中即 key 前缀，如 "images/animals/"）；
         自动补齐尾部斜杠，避免误命中同名前缀的对象；缺省或空字符串表示
@@ -220,19 +226,151 @@ def register_storage_tools(
 
         返回值:
             含 path、count、keys（完整对象 key 列表）、files（对象列表，每项含
-            key 与 filename——key 去除 path 前缀后的相对文件名）的字典。
+            key、filename——key 去除 path 前缀后的相对文件名，以及 size 字节数
+            与 last_modified 最近修改时间）的字典。
         """
         try:
             payload = StorageListInput(path=path)
-            keys = storage.list(payload.path)
+            entries = storage.list(payload.path)
             files = [
-                {"key": key, "filename": key[len(payload.path) :]} for key in keys
+                {
+                    "key": entry.key,
+                    "filename": entry.key[len(payload.path) :],
+                    "size": entry.size,
+                    "last_modified": entry.last_modified,
+                }
+                for entry in entries
             ]
             return {
                 "path": payload.path,
                 "count": len(files),
-                "keys": keys,
+                "keys": [entry.key for entry in entries],
                 "files": files,
+            }
+        except AppError as error:
+            raise ToolError(error.public_message) from error
+        except ValidationError as error:
+            detail = error.errors()[0]["msg"] if error.errors() else "Invalid storage parameters"
+            raise ToolError(str(detail)) from error
+
+    @mcp.tool
+    def move_objects(
+        source_path: str | None = None,
+        target_path: str | None = None,
+        moves: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """批量移动对象：目录（前缀）级移动或显式 key 映射二选一。
+
+        前缀模式传 source_path + target_path：把 source_path 下全部对象移动到
+        target_path 下，保留相对文件名（如 "reports/2025/a.pdf" →
+        "archive/2025/a.pdf"）；显式模式传 moves 列表（每项含 source_key 与
+        target_key）。两种模式互斥。逐项尽力而为：单项失败不中断，结果中
+        汇总 moved/failed 明细；source 与 target 相同的项跳过（skipped）。
+
+        Args:
+            source_path: 源目录前缀（前缀模式必填）。
+            target_path: 目标目录前缀（前缀模式必填，空字符串表示根目录）。
+            moves: 显式 {source_key, target_key} 映射列表（映射模式必填）。
+
+        返回值:
+            含 moved（每项含 source_key/target_key/url）、skipped（源目标相同的
+            key）、failed（每项含 source_key/error）、moved_count、failed_count
+            的字典。
+        """
+        try:
+            payload = StorageBatchMoveInput(
+                source_path=source_path,
+                target_path=target_path,
+                moves=moves,
+            )
+            if payload.moves is not None:
+                pairs = [(item.source_key, item.target_key) for item in payload.moves]
+            else:
+                # 前缀模式：展开为逐对象映射，保留相对文件名。
+                source = payload.source_path or ""
+                target = payload.target_path or ""
+                pairs = [
+                    (entry.key, f"{target}{entry.key[len(source) :]}")
+                    for entry in storage.list(source)
+                ]
+
+            moved: list[dict[str, Any]] = []
+            skipped: list[str] = []
+            failed: list[dict[str, str]] = []
+            for source_key, target_key in pairs:
+                if source_key == target_key:
+                    skipped.append(source_key)
+                    continue
+                try:
+                    storage.rename(source_key, target_key)
+                    moved.append(
+                        {
+                            "source_key": source_key,
+                            "target_key": target_key,
+                            "url": storage.download_url(target_key),
+                        }
+                    )
+                except AppError as error:
+                    failed.append({"source_key": source_key, "error": error.public_message})
+            return {
+                "moved": moved,
+                "skipped": skipped,
+                "failed": failed,
+                "moved_count": len(moved),
+                "failed_count": len(failed),
+            }
+        except AppError as error:
+            raise ToolError(error.public_message) from error
+        except ValidationError as error:
+            detail = error.errors()[0]["msg"] if error.errors() else "Invalid storage parameters"
+            raise ToolError(str(detail)) from error
+
+    @mcp.tool
+    def delete_objects(
+        path: str | None = None,
+        keys: list[str] | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """批量删除对象：路径（前缀）模式或显式 key 列表模式二选一。
+
+        路径模式传 path（目录前缀，删除其下全部对象）；列表模式传 keys。
+        安全上限：待删对象超过 100 个时默认拒绝执行，需显式 force=True 确认。
+        删除幂等（对象不存在视为成功）；逐项尽力而为，结果汇总 deleted/failed。
+
+        Args:
+            path: 目录前缀（路径模式必填，空字符串表示整个 bucket 根）。
+            keys: 待删对象 key 列表（列表模式必填）。
+            force: 超过 100 个对象时是否强制执行。
+
+        返回值:
+            含 deleted（成功删除的 key）、failed（每项含 key/error）、
+            deleted_count、failed_count 的字典。
+        """
+        try:
+            payload = StorageBatchDeleteInput(path=path, keys=keys, force=force)
+            if payload.keys is not None:
+                targets = payload.keys
+            else:
+                targets = [entry.key for entry in storage.list(payload.path or "")]
+            if len(targets) > BATCH_DELETE_LIMIT and not payload.force:
+                raise AppError(
+                    ErrorCode.INVALID_PARAMETERS,
+                    f"Refusing to delete {len(targets)} objects; pass force=True to confirm",
+                )
+
+            deleted: list[str] = []
+            failed: list[dict[str, str]] = []
+            for key in targets:
+                try:
+                    storage.delete(key)
+                    deleted.append(key)
+                except AppError as error:
+                    failed.append({"key": key, "error": error.public_message})
+            return {
+                "deleted": deleted,
+                "failed": failed,
+                "deleted_count": len(deleted),
+                "failed_count": len(failed),
             }
         except AppError as error:
             raise ToolError(error.public_message) from error

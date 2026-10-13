@@ -158,3 +158,50 @@ def test_factory_signs_at_public_endpoint_with_sigv4(monkeypatch, public_domain)
         assert calls[1][1]["endpoint_url"] == "https://public.test"
     storage.download_url("k")
     assert calls[-1][2].url_calls
+
+
+def test_list_returns_entries_with_metadata() -> None:
+    """list 返回含 size 与 last_modified 的 ObjectEntry（自动翻页）。"""
+    from datetime import UTC, datetime
+
+    from agent_app.infrastructure.storage import ObjectEntry
+
+    modified = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+    class FakePaginator:
+        def paginate(self, **kwargs):
+            assert kwargs["Prefix"] == "tmp/"
+            yield {"Contents": [{"Key": "tmp/a.bin", "Size": 12, "LastModified": modified}]}
+            yield {"Contents": [{"Key": "tmp/b.bin", "Size": 3}]}
+
+    class ListingClient:
+        def get_paginator(self, name):
+            assert name == "list_objects_v2"
+            return FakePaginator()
+
+    storage = Boto3Storage(client=ListingClient(), bucket="b", expires_in=300)
+
+    entries = storage.list("tmp/")
+
+    assert entries == [
+        ObjectEntry(key="tmp/a.bin", size=12, last_modified=modified.isoformat()),
+        ObjectEntry(key="tmp/b.bin", size=3, last_modified=None),
+    ]
+
+
+def test_list_maps_client_error_to_upstream_unavailable() -> None:
+    class FailingPaginator:
+        def paginate(self, **kwargs):
+            raise ClientError({"Error": {"Code": "X", "Message": "y"}}, "ListObjectsV2")
+            yield  # pragma: no cover - 使其成为生成器函数
+
+    class FailingClient:
+        def get_paginator(self, name):
+            return FailingPaginator()
+
+    storage = Boto3Storage(client=FailingClient(), bucket="b", expires_in=300)
+
+    with pytest.raises(AppError) as error:
+        storage.list("tmp/")
+
+    assert error.value.code is ErrorCode.UPSTREAM_UNAVAILABLE

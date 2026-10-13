@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import boto3
@@ -17,6 +18,19 @@ from agent_app.errors import AppError, ErrorCode
 
 if TYPE_CHECKING:
     from agent_app.config import S3Config
+
+
+@dataclass(frozen=True)
+class ObjectEntry:
+    """列举对象时返回的单项元数据。
+
+    size 为对象字节数；last_modified 为最近修改时间（ISO 8601 字符串，
+    S3 未返回时为 None）。批量管理类工具据此支持按时间/大小的清理任务。
+    """
+
+    key: str
+    size: int = 0
+    last_modified: str | None = None
 
 
 @runtime_checkable
@@ -43,8 +57,8 @@ class ObjectStorage(Protocol):
         """把对象从 source_key 移动/重命名到 target_key。"""
         ...
 
-    def list(self, prefix: str) -> list[str]:
-        """列出指定前缀下的全部对象 key。"""
+    def list(self, prefix: str) -> list[ObjectEntry]:
+        """列出指定前缀下的全部对象（含 key、大小、修改时间元数据）。"""
         ...
 
 
@@ -150,30 +164,38 @@ class Boto3Storage:
                 "Object storage is temporarily unavailable",
             ) from error
 
-    def list(self, prefix: str) -> list[str]:
-        """列出 ``bucket`` 中前缀匹配的全部对象 key（自动翻页）。
+    def list(self, prefix: str) -> list[ObjectEntry]:
+        """列出 ``bucket`` 中前缀匹配的全部对象（自动翻页，含元数据）。
 
         参数:
             prefix: 对象 key 前缀（S3 无真实目录，目录语义即前缀匹配）。
 
         返回值:
-            前缀下的全部对象 key 列表（S3 按字典序返回）。
+            前缀下的全部对象条目（S3 按字典序返回），每项含 key、size
+            与 last_modified（ISO 8601 字符串，缺失为 None）。
 
         异常:
             AppError: 列举失败时抛出 UPSTREAM_UNAVAILABLE。
         """
-        keys: list[str] = []
+        entries: list[ObjectEntry] = []
         try:
             paginator = self._client.get_paginator("list_objects_v2")
             for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
                 for item in page.get("Contents", []):
-                    keys.append(item["Key"])
+                    modified = item.get("LastModified")
+                    entries.append(
+                        ObjectEntry(
+                            key=item["Key"],
+                            size=int(item.get("Size", 0)),
+                            last_modified=(modified.isoformat() if modified is not None else None),
+                        )
+                    )
         except ClientError as error:
             raise AppError(
                 ErrorCode.UPSTREAM_UNAVAILABLE,
                 "Object storage is temporarily unavailable",
             ) from error
-        return keys
+        return entries
 
     def upload_url(self, key: str, *, content_type: str) -> str:
         """生成 ``bucket/key`` 的预签名 PUT URL，绑定指定 Content-Type。

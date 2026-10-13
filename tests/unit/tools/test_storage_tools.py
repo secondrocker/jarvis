@@ -5,6 +5,7 @@ from fakes import FakeObjectStorage
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
+from agent_app.errors import AppError, ErrorCode
 from agent_app.tools import build_mcp_server, storage_tools
 
 
@@ -154,6 +155,7 @@ async def test_delete_object_requires_key(mcp_server) -> None:
 
 @pytest.mark.asyncio
 async def test_rename_object_moves_path(mcp_server, fake_storage) -> None:
+    fake_storage.objects.add("uploads/tmp.bin")
     async with Client(mcp_server) as client:
         result = await client.call_tool(
             "rename_object",
@@ -197,8 +199,8 @@ async def test_list_objects_returns_files_under_path(mcp_server, fake_storage) -
     assert data["path"] == "images/animals/"
     assert data["keys"] == ["images/animals/a.png", "images/animals/b.png"]
     assert data["files"] == [
-        {"key": "images/animals/a.png", "filename": "a.png"},
-        {"key": "images/animals/b.png", "filename": "b.png"},
+        {"key": "images/animals/a.png", "filename": "a.png", "size": 0, "last_modified": None},
+        {"key": "images/animals/b.png", "filename": "b.png", "size": 0, "last_modified": None},
     ]
     assert data["count"] == 2
 
@@ -225,6 +227,196 @@ async def test_list_objects_empty_directory(mcp_server, fake_storage) -> None:
     assert data["path"] == "nothing/here/"
     assert data["keys"] == []
     assert data["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_list_objects_includes_size_metadata(mcp_server, fake_storage) -> None:
+    """put 上传过的对象在列举结果中带字节数元数据。"""
+    fake_storage.put(b"12345", key="uploads/sized.bin", content_type="application/octet-stream")
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool("list_objects", {"path": "uploads"})
+
+    data = result.data
+    assert data["files"][0]["size"] == 5
+
+
+@pytest.mark.asyncio
+async def test_move_objects_by_prefix_preserves_filenames(mcp_server, fake_storage) -> None:
+    """前缀模式移动整个目录并保留相对文件名。"""
+    fake_storage.objects.update({"reports/2025/a.pdf", "reports/2025/b.pdf", "reports/x.pdf"})
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool(
+            "move_objects",
+            {"source_path": "reports/2025", "target_path": "archive/2025"},
+        )
+
+    data = result.data
+    assert data["moved_count"] == 2
+    assert data["failed_count"] == 0
+    assert {m["target_key"] for m in data["moved"]} == {"archive/2025/a.pdf", "archive/2025/b.pdf"}
+    assert fake_storage.objects == {"reports/x.pdf", "archive/2025/a.pdf", "archive/2025/b.pdf"}
+    assert data["moved"][0]["url"].startswith("https://fake-s3.test/archive/2025/")
+
+
+@pytest.mark.asyncio
+async def test_move_objects_with_explicit_mapping(mcp_server, fake_storage) -> None:
+    """映射模式按给定 source/target 精确移动。"""
+    fake_storage.objects.update({"uploads/a.bin", "uploads/b.bin"})
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool(
+            "move_objects",
+            {
+                "moves": [
+                    {"source_key": "uploads/a.bin", "target_key": "keep/a.bin"},
+                    {"source_key": "uploads/b.bin", "target_key": "keep/b.bin"},
+                ]
+            },
+        )
+
+    data = result.data
+    assert data["moved_count"] == 2
+    assert fake_storage.objects == {"keep/a.bin", "keep/b.bin"}
+
+
+@pytest.mark.asyncio
+async def test_move_objects_best_effort_reports_failures(mcp_server, fake_storage) -> None:
+    """单项失败不中断，failed 汇总明细且其余对象照常移动。"""
+    # 只放入 ok.bin；missing.bin 不存在，rename 会失败。
+    fake_storage.objects.add("uploads/ok.bin")
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool(
+            "move_objects",
+            {
+                "moves": [
+                    {"source_key": "uploads/ok.bin", "target_key": "keep/ok.bin"},
+                    {"source_key": "uploads/missing.bin", "target_key": "keep/missing.bin"},
+                ]
+            },
+        )
+
+    data = result.data
+    assert data["moved_count"] == 1
+    assert data["failed_count"] == 1
+    assert data["failed"][0]["source_key"] == "uploads/missing.bin"
+    assert fake_storage.objects == {"keep/ok.bin"}
+
+
+@pytest.mark.asyncio
+async def test_move_objects_skips_noop_pairs(mcp_server, fake_storage) -> None:
+    """source 与 target 相同的项跳过而非报错。"""
+    fake_storage.objects.update({"uploads/a.bin"})
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool(
+            "move_objects",
+            {"moves": [{"source_key": "uploads/a.bin", "target_key": "uploads/a.bin"}]},
+        )
+
+    data = result.data
+    assert data["moved_count"] == 0
+    assert data["skipped"] == ["uploads/a.bin"]
+    assert fake_storage.renames == []
+
+
+@pytest.mark.asyncio
+async def test_move_objects_rejects_both_modes(mcp_server) -> None:
+    async with Client(mcp_server) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool(
+                "move_objects",
+                {
+                    "source_path": "reports/",
+                    "target_path": "archive/",
+                    "moves": [{"source_key": "a", "target_key": "b"}],
+                },
+            )
+
+
+@pytest.mark.asyncio
+async def test_delete_objects_by_keys(mcp_server, fake_storage) -> None:
+    fake_storage.objects.update({"uploads/a.bin", "uploads/b.bin", "uploads/c.bin"})
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool(
+            "delete_objects",
+            {"keys": ["/uploads/a.bin", "uploads/b.bin", "uploads/a.bin"]},
+        )
+
+    data = result.data
+    # key 规范化 + 去重后只删两个。
+    assert data["deleted"] == ["uploads/a.bin", "uploads/b.bin"]
+    assert fake_storage.objects == {"uploads/c.bin"}
+
+
+@pytest.mark.asyncio
+async def test_delete_objects_by_path(mcp_server, fake_storage) -> None:
+    fake_storage.objects.update({"tmp/a.bin", "tmp/sub/b.bin", "keep/c.bin"})
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool("delete_objects", {"path": "tmp"})
+
+    data = result.data
+    assert data["deleted_count"] == 2
+    assert fake_storage.objects == {"keep/c.bin"}
+
+
+@pytest.mark.asyncio
+async def test_delete_objects_enforces_limit_without_force(mcp_server, fake_storage) -> None:
+    """超过 100 个对象时默认拒绝，force=True 才执行。"""
+    fake_storage.objects.update(f"tmp/{i}.bin" for i in range(101))
+
+    async with Client(mcp_server) as client:
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool("delete_objects", {"path": "tmp"})
+        assert "force" in str(exc_info.value)
+
+        result = await client.call_tool("delete_objects", {"path": "tmp", "force": True})
+
+    assert result.data["deleted_count"] == 101
+    assert fake_storage.objects == set()
+
+
+@pytest.mark.asyncio
+async def test_delete_objects_best_effort_reports_failures(
+    mcp_server, fake_storage, monkeypatch
+) -> None:
+    """单项删除失败不中断，failed 汇总明细。"""
+
+    def failing_delete(key: str) -> None:
+        if key == "uploads/bad.bin":
+            raise AppError(
+                ErrorCode.UPSTREAM_UNAVAILABLE, "Object storage is temporarily unavailable"
+            )
+        FakeObjectStorage.delete(fake_storage, key)
+
+    monkeypatch.setattr(fake_storage, "delete", failing_delete)
+    fake_storage.objects.update({"uploads/a.bin", "uploads/bad.bin"})
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool(
+            "delete_objects",
+            {"keys": ["uploads/a.bin", "uploads/bad.bin"]},
+        )
+
+    data = result.data
+    assert data["deleted"] == ["uploads/a.bin"]
+    assert data["failed"] == [
+        {"key": "uploads/bad.bin", "error": "Object storage is temporarily unavailable"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delete_objects_rejects_both_modes(mcp_server) -> None:
+    async with Client(mcp_server) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool(
+                "delete_objects",
+                {"path": "tmp/", "keys": ["a"]},
+            )
 
 
 @pytest.mark.asyncio
