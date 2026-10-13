@@ -168,6 +168,42 @@ async def test_generate_image_rejects_blank_prompt(mcp_server) -> None:
 
 
 @pytest.mark.asyncio
+async def test_generate_image_uses_custom_path(mcp_server, fake_storage, patch_generation) -> None:
+    async with Client(mcp_server) as client:
+        result = await client.call_tool(
+            "generate_image",
+            {"prompt": "画一只猫", "path": "/assets/poster.png"},
+        )
+
+    data = result.data
+    # 自定义路径固定使用（含文件名），自动多图时追加 -2 序号。
+    assert [image["key"] for image in data["images"]] == [
+        "assets/poster.png",
+        "assets/poster-2.png",
+    ]
+    assert data["key"] == "assets/poster.png"
+    assert data["path"] == "assets/poster.png"
+    assert data["url"] == "https://fake-s3.test/assets/poster.png"
+    assert fake_storage.uploads[0][0] == "assets/poster.png"
+
+
+@pytest.mark.asyncio
+async def test_generate_image_custom_path_appends_extension(
+    mcp_server, fake_storage, patch_generation
+) -> None:
+    patch_generation["content"] = "![image](https://img.test/cat.png)"
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool(
+            "generate_image",
+            {"prompt": "画一只猫", "path": "assets/poster"},
+        )
+
+    # 无扩展名的自定义路径按识别出的格式补齐。
+    assert result.data["key"] == "assets/poster.png"
+
+
+@pytest.mark.asyncio
 async def test_mcp_server_omits_tool_without_config(fake_storage) -> None:
     settings = Settings.model_validate(
         {"openai": {"api_key": SecretStr("test-key"), "model": "gpt-4o-mini"}}

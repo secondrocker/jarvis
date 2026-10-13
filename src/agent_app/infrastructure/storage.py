@@ -42,6 +42,10 @@ class ObjectStorage(Protocol):
         """把对象从 source_key 移动/重命名到 target_key。"""
         ...
 
+    def list(self, prefix: str) -> list[str]:
+        """列出指定前缀下的全部对象 key。"""
+        ...
+
 
 class Boto3Storage:
     """基于 boto3 client 的 ``ObjectStorage`` 实现。
@@ -161,6 +165,31 @@ class Boto3Storage:
                 ErrorCode.UPSTREAM_UNAVAILABLE,
                 "Object storage is temporarily unavailable",
             ) from error
+
+    def list(self, prefix: str) -> list[str]:
+        """列出 ``bucket`` 中前缀匹配的全部对象 key（自动翻页）。
+
+        参数:
+            prefix: 对象 key 前缀（S3 无真实目录，目录语义即前缀匹配）。
+
+        返回值:
+            前缀下的全部对象 key 列表（S3 按字典序返回）。
+
+        异常:
+            AppError: 列举失败时抛出 UPSTREAM_UNAVAILABLE。
+        """
+        keys: list[str] = []
+        try:
+            paginator = self._client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    keys.append(item["Key"])
+        except ClientError as error:
+            raise AppError(
+                ErrorCode.UPSTREAM_UNAVAILABLE,
+                "Object storage is temporarily unavailable",
+            ) from error
+        return keys
 
     def upload_url(self, key: str, *, content_type: str) -> str:
         """生成 ``bucket/key`` 的预签名 PUT URL，绑定指定 Content-Type。

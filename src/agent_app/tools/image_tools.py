@@ -94,6 +94,31 @@ def _compose_prompt(prompt: str, aspect_ratio: str | None) -> str:
     return f"{prompt}（画面比例 {aspect_ratio}）"
 
 
+def _custom_key(path: str, extension: str, index: int) -> str:
+    """根据自定义路径推导第 index 张图（0 起）的对象 key。
+
+    path 可含文件名与扩展名：带已知图片扩展名时按原样使用；无扩展名时按
+    识别出的格式补齐。多张图时在扩展名前追加 ``-2``/``-3`` 序号避免覆盖。
+
+    参数:
+        path: 调用方传入的自定义存储路径（已规范化、无首部斜杠）。
+        extension: 本张图片识别出的扩展名。
+        index: 图片序号（0 起，仅 >0 时追加序号）。
+
+    返回值:
+        最终对象 key。
+    """
+    known_exts = ("png", "jpg", "jpeg", "webp", "gif")
+    lowered = path.lower()
+    for ext in known_exts:
+        suffix = f".{ext}"
+        if lowered.endswith(suffix):
+            stem, ext_with_dot = path[: -len(suffix)], path[-len(suffix) :]
+            return path if index == 0 else f"{stem}-{index + 1}{ext_with_dot}"
+    suffix = f".{extension}"
+    return f"{path}{suffix}" if index == 0 else f"{path}-{index + 1}.{extension}"
+
+
 def _extract_image_sources(content: str) -> list[dict[str, Any]]:
     """从回复正文解析图片来源：内嵌 base64 data URL > markdown http 图片 > 裸链接。
 
@@ -247,24 +272,32 @@ def register_image_tools(
     """
 
     @mcp.tool
-    def generate_image(prompt: str, aspect_ratio: str | None = None) -> dict[str, Any]:
+    def generate_image(
+        prompt: str,
+        aspect_ratio: str | None = None,
+        path: str | None = None,
+    ) -> dict[str, Any]:
         """根据自然语言要求生成图片并上传对象存储，返回可下载 URL。
 
         prompt 为图片内容描述（支持中英文）；aspect_ratio 可选，取值
         1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 9:16 / 16:9 / 21:9，缺省由模型自选。
-        生成图片按内容自动归类到 images/<category>/<日期>/<id>.<ext>。
+        生成图片按内容自动归类到 images/<category>/<日期>/<id>.<ext>；
+        path 可选，为自定义存储路径（含文件名，如 "assets/poster.png"），
+        传入时固定使用该路径：无扩展名自动补齐，多张图在文件名后追加
+        -2/-3 序号。
 
         Args:
             prompt: 图片内容描述。
             aspect_ratio: 画面比例（宽:高），可选。
+            path: 自定义存储路径（含文件名），可选；缺省按内容自动归类。
 
         返回值:
-            含 key、url（首张图）、prompt、aspect_ratio、images 的字典；
+            含 key、url（首张图）、prompt、aspect_ratio、path、images 的字典；
             images 为全部上传图（最多 4 张）的列表，每项含 key、url、source
             （内嵌 base64 为 "inline"，外链为原始 URL）。
         """
         try:
-            params = ImageGenerateInput(prompt=prompt, aspect_ratio=aspect_ratio)
+            params = ImageGenerateInput(prompt=prompt, aspect_ratio=aspect_ratio, path=path)
         except ValidationError as error:
             detail = error.errors()[0]["msg"] if error.errors() else "Invalid image parameters"
             raise ToolError(str(detail)) from error
@@ -288,7 +321,10 @@ def register_image_tools(
                         continue
                     data, extension, content_type = downloaded
                     origin = source["url"]
-                key = f"{_KEY_PREFIX}/{category}/{date_dir}/{uuid4().hex}.{extension}"
+                if params.path:
+                    key = _custom_key(params.path, extension, len(images))
+                else:
+                    key = f"{_KEY_PREFIX}/{category}/{date_dir}/{uuid4().hex}.{extension}"
                 storage.put(data, key=key, content_type=content_type)
                 images.append({"key": key, "url": storage.download_url(key), "source": origin})
                 if len(images) >= 4:
@@ -303,6 +339,7 @@ def register_image_tools(
                 "url": images[0]["url"],
                 "prompt": params.prompt,
                 "aspect_ratio": params.aspect_ratio,
+                "path": params.path,
                 "images": images,
             }
         except AppError as error:

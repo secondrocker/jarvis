@@ -26,6 +26,7 @@ class FakeObjectStorage:
         self.uploads: list[tuple[str, str, int]] = []
         self.deletes: list[str] = []
         self.renames: list[tuple[str, str]] = []
+        self.objects: set[str] = set()
 
     def put(self, data: bytes, *, key: str, content_type: str) -> None:
         """记录上传的 key、content_type 与字节数。
@@ -36,6 +37,7 @@ class FakeObjectStorage:
             content_type: 内容类型。
         """
         self.uploads.append((key, content_type, len(data)))
+        self.objects.add(key)
 
     def download_url(self, key: str) -> str:
         """返回基于 key 的稳定 fake 下载 URL。
@@ -67,6 +69,7 @@ class FakeObjectStorage:
             key: 对象 key。
         """
         self.deletes.append(key)
+        self.objects.discard(key)
 
     def rename(self, source_key: str, target_key: str) -> None:
         """记录重命名调用的 (source_key, target_key)。
@@ -76,6 +79,19 @@ class FakeObjectStorage:
             target_key: 目标对象 key。
         """
         self.renames.append((source_key, target_key))
+        self.objects.discard(source_key)
+        self.objects.add(target_key)
+
+    def list(self, prefix: str) -> list[str]:
+        """返回 fake 对象集合中前缀匹配的 key（排序以模拟 S3 字典序）。
+
+        参数:
+            prefix: 对象 key 前缀。
+
+        返回值:
+            前缀匹配的 key 列表。
+        """
+        return sorted(key for key in self.objects if key.startswith(prefix))
 
 
 class ScriptedModel(BaseChatModel):

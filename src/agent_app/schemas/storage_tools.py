@@ -77,6 +77,22 @@ class StorageDeleteInput(StorageDownloadUrlInput):
         return stripped
 
 
+class StorageListInput(BaseModel):
+    """列举指定路径下对象接收的已校验输入。"""
+
+    path: str = ""
+
+    @field_validator("path")
+    @classmethod
+    def normalize_path(cls, value: str) -> str:
+        """规范化路径为无首部斜杠的字符串；空字符串表示列举全部对象。"""
+        stripped = value.strip().lstrip("/")
+        if not stripped:
+            return ""
+        # 目录语义的路径自动补尾部斜杠，避免误命中同名前缀的对象。
+        return stripped if stripped.endswith("/") else f"{stripped}/"
+
+
 class StorageRenameInput(BaseModel):
     """重命名/移动对象接收的已校验输入。"""
 

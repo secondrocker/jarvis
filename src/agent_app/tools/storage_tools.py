@@ -3,7 +3,8 @@
 底层 ObjectStorage（Boto3Storage）的字节接口不天然映射 MCP 参数，故上传采用 URL 中转：
 先下载远端字节再上传 S3，返回 {key, url}。get_download_url 独立暴露，用于刷新过期 URL；
 get_upload_url 返回预签名 PUT URL，供调用方直传字节到 S3；delete_object 删除对象；
-rename_object 重命名/移动对象路径（S3 语义为复制后删除源对象）。
+rename_object 重命名/移动对象路径（S3 语义为复制后删除源对象）；
+list_objects 列出指定路径（前缀）下的全部对象及其文件名。
 """
 
 from typing import Any
@@ -19,6 +20,7 @@ from agent_app.infrastructure.storage import ObjectStorage
 from agent_app.schemas.storage_tools import (
     StorageDeleteInput,
     StorageDownloadUrlInput,
+    StorageListInput,
     StorageRenameInput,
     StorageUploadFromUrlInput,
     StorageUploadUrlInput,
@@ -198,6 +200,39 @@ def register_storage_tools(
                 "key": object_key,
                 "url": storage.upload_url(object_key, content_type=payload.content_type),
                 "content_type": payload.content_type,
+            }
+        except AppError as error:
+            raise ToolError(error.public_message) from error
+        except ValidationError as error:
+            detail = error.errors()[0]["msg"] if error.errors() else "Invalid storage parameters"
+            raise ToolError(str(detail)) from error
+
+    @mcp.tool
+    def list_objects(path: str = "") -> dict[str, Any]:
+        """列出对象存储中指定路径下的全部对象，返回文件名列表。
+
+        path 为目录语义的存储路径（S3 中即 key 前缀，如 "images/animals/"）；
+        自动补齐尾部斜杠，避免误命中同名前缀的对象；缺省或空字符串表示
+        列举 bucket 根下的全部对象。
+
+        Args:
+            path: 目录语义的存储路径前缀，可选。
+
+        返回值:
+            含 path、count、keys（完整对象 key 列表）、files（对象列表，每项含
+            key 与 filename——key 去除 path 前缀后的相对文件名）的字典。
+        """
+        try:
+            payload = StorageListInput(path=path)
+            keys = storage.list(payload.path)
+            files = [
+                {"key": key, "filename": key[len(payload.path) :]} for key in keys
+            ]
+            return {
+                "path": payload.path,
+                "count": len(files),
+                "keys": keys,
+                "files": files,
             }
         except AppError as error:
             raise ToolError(error.public_message) from error

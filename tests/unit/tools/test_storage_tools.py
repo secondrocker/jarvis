@@ -176,3 +176,52 @@ async def test_rename_object_rejects_same_paths(mcp_server, fake_storage) -> Non
                 {"source_key": "a.bin", "target_key": "  "},
             )
     assert fake_storage.renames == []
+
+
+@pytest.mark.asyncio
+async def test_list_objects_returns_files_under_path(mcp_server, fake_storage) -> None:
+    fake_storage.objects.update(
+        {
+            "images/animals/a.png",
+            "images/animals/b.png",
+            "images/logo/c.png",
+            "uploads/x.bin",
+        }
+    )
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool("list_objects", {"path": "images/animals"})
+
+    data = result.data
+    # 目录语义自动补尾部斜杠，只命中该目录下对象。
+    assert data["path"] == "images/animals/"
+    assert data["keys"] == ["images/animals/a.png", "images/animals/b.png"]
+    assert data["files"] == [
+        {"key": "images/animals/a.png", "filename": "a.png"},
+        {"key": "images/animals/b.png", "filename": "b.png"},
+    ]
+    assert data["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_list_objects_root_lists_all(mcp_server, fake_storage) -> None:
+    fake_storage.objects.update({"a/1.bin", "b/2.bin"})
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool("list_objects", {})
+
+    data = result.data
+    assert data["path"] == ""
+    assert data["keys"] == ["a/1.bin", "b/2.bin"]
+    assert data["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_list_objects_empty_directory(mcp_server, fake_storage) -> None:
+    async with Client(mcp_server) as client:
+        result = await client.call_tool("list_objects", {"path": "/nothing/here/"})
+
+    data = result.data
+    assert data["path"] == "nothing/here/"
+    assert data["keys"] == []
+    assert data["count"] == 0

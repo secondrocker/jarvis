@@ -13,6 +13,7 @@ class ImageGenerateInput(BaseModel):
 
     prompt: str = Field(min_length=1)
     aspect_ratio: AspectRatio | None = None
+    path: str | None = None
 
     @field_validator("prompt")
     @classmethod
@@ -22,3 +23,12 @@ class ImageGenerateInput(BaseModel):
         if not stripped:
             raise ValueError("prompt is required")
         return stripped
+
+    @field_validator("path")
+    @classmethod
+    def normalize_path(cls, value: str | None) -> str | None:
+        """规范化自定义存储路径：去空白与首部斜杠；空白视为未提供。"""
+        if value is None:
+            return None
+        stripped = value.strip().lstrip("/")
+        return stripped or None
