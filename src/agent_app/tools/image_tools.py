@@ -7,6 +7,7 @@
 错误处理范式与 storage_tools.py 一致：AppError 转为 ToolError，不抛裸异常。
 """
 
+import json
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -17,7 +18,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 
-from agent_app.config import ImageGenConfig
+from agent_app.config import ImageGenConfig, ImageVisionConfig
 from agent_app.errors import AppError, ErrorCode
 from agent_app.infrastructure.storage import ObjectStorage
 from agent_app.schemas.image_tools import ImageGenerateInput
@@ -257,11 +258,88 @@ def _request_generation(config: ImageGenConfig, prompt: str) -> str:
     return str(content)
 
 
+def _request_luna_generation(
+    vision: ImageVisionConfig,
+    model: str,
+    prompt: str,
+) -> list[dict[str, Any]]:
+    """调用 image_vision 网关上的 gpt-6-luna 生成图片，返回图片来源列表。
+
+    gpt-6-luna 通过 OpenAI 的 image_generation 工具生图：请求需携带
+    tools=[{"type": "image_generation"}]，图片以 tool_calls 里
+    image_generation(result=<base64>) 的形式返回，正文则是文字说明。
+
+    参数:
+        vision: image_vision 网关配置（base_url/api_key 必须已配置）。
+        model: 网关上请求的模型名（默认 gpt-6-luna）。
+        prompt: 已并入比例要求的完整提示词。
+
+    返回值:
+        图片来源列表（data/extension/content_type），与
+        _extract_image_sources 的 data 项同构；无图片时为空列表。
+
+    异常:
+        AppError: 请求失败或响应结构异常时抛出 UPSTREAM_UNAVAILABLE。
+    """
+    import base64
+    import binascii
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "tools": [{"type": "image_generation"}],
+    }
+    headers = {
+        "Authorization": f"Bearer {vision.api_key.get_secret_value()}",  # type: ignore[union-attr]
+        "Content-Type": "application/json",
+    }
+    try:
+        response = httpx.post(
+            f"{vision.base_url}/v1/chat/completions",  # type: ignore[operator]
+            json=payload,
+            headers=headers,
+            timeout=vision.timeout_seconds,
+        )
+        response.raise_for_status()
+        body = response.json()
+    except (httpx.HTTPError, ValueError) as error:
+        raise AppError(
+            ErrorCode.UPSTREAM_UNAVAILABLE,
+            "Image generation service is temporarily unavailable",
+        ) from error
+    try:
+        message = body["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError) as error:
+        raise AppError(
+            ErrorCode.UPSTREAM_UNAVAILABLE,
+            "Image generation service returned an unexpected response",
+        ) from error
+    sources: list[dict[str, Any]] = []
+    for call in message.get("tool_calls") or []:
+        function = call.get("function") or {}
+        if function.get("name") != "image_generation":
+            continue
+        try:
+            result = json.loads(function.get("arguments") or "{}").get("result", "")
+            data = base64.b64decode(re.sub(r"\s+", "", result), validate=True)
+        except (ValueError, TypeError, binascii.Error):
+            continue
+        sniffed = _sniff_image(data) or ("png", "image/png")
+        sources.append({"data": data, "extension": sniffed[0], "content_type": sniffed[1]})
+    # 兜底：个别网关可能直接把图片内嵌在正文中返回。
+    if not sources:
+        content = message.get("content")
+        if isinstance(content, str):
+            sources = _extract_image_sources(content)
+    return sources
+
+
 def register_image_tools(
     mcp: FastMCP,
     *,
     config: ImageGenConfig,
     storage: ObjectStorage,
+    vision_config: ImageVisionConfig | None = None,
 ) -> None:
     """把图像生成 tool 注册到给定 MCP 服务。
 
@@ -269,6 +347,8 @@ def register_image_tools(
         mcp: 待注册的 FastMCP 服务实例。
         config: 图像生成服务配置（base_url/api_key 必须已配置）。
         storage: 上传生成图片的对象存储。
+        vision_config: gpt-6-luna 生图复用的 image_vision 网关配置；
+            未提供时 model=gpt-6-luna 的调用会返回明确错误。
     """
 
     @mcp.tool
@@ -276,11 +356,15 @@ def register_image_tools(
         prompt: str,
         aspect_ratio: str | None = None,
         path: str | None = None,
+        model: str = "gemini",
     ) -> dict[str, Any]:
         """根据自然语言要求生成图片并上传对象存储，返回可下载 URL。
 
         prompt 为图片内容描述（支持中英文）；aspect_ratio 可选，取值
         1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 9:16 / 16:9 / 21:9，缺省由模型自选。
+        model 可选，取值 gemini（默认，gemini-web2api 反代）或
+        gpt-6-luna（经 image_vision 网关的 image_generation 工具）。
+        gemini 失败时自动降级重试 gpt-6-luna（返回值 fallback=true）。
         生成图片按内容自动归类到 images/<category>/<日期>/<id>.<ext>；
         path 可选，为自定义存储路径（含文件名，如 "assets/poster.png"），
         传入时固定使用该路径：无扩展名自动补齐，多张图在文件名后追加
@@ -290,21 +374,53 @@ def register_image_tools(
             prompt: 图片内容描述。
             aspect_ratio: 画面比例（宽:高），可选。
             path: 自定义存储路径（含文件名），可选；缺省按内容自动归类。
+            model: 生图模型，gemini（默认）或 gpt-6-luna。
 
         返回值:
-            含 key、url（首张图）、prompt、aspect_ratio、path、images 的字典；
-            images 为全部上传图（最多 4 张）的列表，每项含 key、url、source
-            （内嵌 base64 为 "inline"，外链为原始 URL）。
+            含 key、url（首张图）、prompt、aspect_ratio、path、model
+            （实际生成模型）、fallback（是否降级到 luna）、images 的字典；
+            images 为全部上传图（最多 4 张）的列表，每项含 key、url、
+            source（内嵌 base64 为 "inline"，外链为原始 URL）。
         """
         try:
-            params = ImageGenerateInput(prompt=prompt, aspect_ratio=aspect_ratio, path=path)
+            params = ImageGenerateInput(
+                prompt=prompt, aspect_ratio=aspect_ratio, path=path, model=model
+            )
         except ValidationError as error:
             detail = error.errors()[0]["msg"] if error.errors() else "Invalid image parameters"
             raise ToolError(str(detail)) from error
         full_prompt = _compose_prompt(params.prompt, params.aspect_ratio)
         try:
-            content = _request_generation(config, full_prompt)
-            sources = _extract_image_sources(content)
+            fallback_used = False
+            if params.model == "gpt-6-luna":
+                if vision_config is None or vision_config.base_url is None:
+                    raise AppError(
+                        ErrorCode.UPSTREAM_UNAVAILABLE,
+                        "gpt-6-luna image generation is not configured",
+                    )
+                sources = _request_luna_generation(vision_config, config.luna_model, full_prompt)
+                used_model = "gpt-6-luna"
+            else:
+                try:
+                    content = _request_generation(config, full_prompt)
+                    sources = _extract_image_sources(content)
+                    if not sources:
+                        raise AppError(
+                            ErrorCode.UPSTREAM_UNAVAILABLE,
+                            "No image was generated for this prompt",
+                        )
+                    used_model = "gemini"
+                except AppError:
+                    # gemini 生图失败时自动降级到 gpt-6-luna（可配置关闭）。
+                    if not config.luna_fallback or vision_config is None:
+                        raise
+                    if vision_config.base_url is None:
+                        raise
+                    sources = _request_luna_generation(
+                        vision_config, config.luna_model, full_prompt
+                    )
+                    used_model = "gpt-6-luna"
+                    fallback_used = True
             category = _classify_category(params.prompt)
             date_dir = datetime.now(UTC).strftime("%Y%m%d")
             images: list[dict[str, Any]] = []
@@ -340,6 +456,9 @@ def register_image_tools(
                 "prompt": params.prompt,
                 "aspect_ratio": params.aspect_ratio,
                 "path": params.path,
+                # model 返回实际生成模型（降级时与请求模型不同），fallback 标记是否降级。
+                "model": used_model,
+                "fallback": fallback_used,
                 "images": images,
             }
         except AppError as error:

@@ -107,6 +107,10 @@ class ImageGenConfig(BaseModel):
     base_url: str | None = None
     api_key: SecretStr | None = None
     model: str = Field(default="gemini-image", min_length=1)
+    # gpt-6-luna 生图走的模型名（在 image_vision 网关上请求时使用）。
+    luna_model: str = Field(default="gpt-6-luna", min_length=1)
+    # gemini 生图失败时是否自动降级到 gpt-6-luna（需 image_vision 已配置）。
+    luna_fallback: bool = True
     timeout_seconds: float = Field(default=180.0, gt=0)
 
     @field_validator("base_url")
@@ -123,6 +127,43 @@ class ImageGenConfig(BaseModel):
         """base_url 与 api_key 必须同时配置或同时缺省。"""
         if (self.base_url is None) != (self.api_key is None):
             raise ValueError("image_gen.base_url and image_gen.api_key must be configured together")
+        return self
+
+
+class ImageVisionConfig(BaseModel):
+    """Gemini 图像识别（vision）服务（OpenAI 兼容反代）配置。
+
+    base_url 与 api_key 必须同时配置或同时缺省；缺省时不注册图像识别
+    MCP 工具（与 image_gen 的装配哲学一致）。
+    """
+
+    base_url: str | None = None
+    api_key: SecretStr | None = None
+    model: str = Field(default="gemini-3.8-flash", min_length=1)
+    # 主模型连续失败时的降级备用模型（网关对部分模型需登录态账号且偶发 504）。
+    fallback_model: str = Field(default="gemini-3.6-flash", min_length=1)
+    timeout_seconds: float = Field(default=120.0, gt=0)
+    # 送识别前兜底压缩的最大边长（像素）；过大图片压缩后可显著降低延迟。
+    max_image_edge: int = Field(default=1280, ge=256)
+    # 单次 organize_images 批量整理的默认对象数上限。
+    batch_limit: int = Field(default=20, ge=1, le=200)
+
+    @field_validator("base_url")
+    @classmethod
+    def normalize_base_url(cls, value: str | None) -> str | None:
+        """去除首尾空白与尾斜杠；空白字符串视为未配置。"""
+        if value is None:
+            return None
+        stripped = value.strip().rstrip("/")
+        return stripped or None
+
+    @model_validator(mode="after")
+    def check_url_token_pair(self) -> "ImageVisionConfig":
+        """base_url 与 api_key 必须同时配置或同时缺省。"""
+        if (self.base_url is None) != (self.api_key is None):
+            raise ValueError(
+                "image_vision.base_url and image_vision.api_key must be configured together"
+            )
         return self
 
 
@@ -152,6 +193,7 @@ class Settings(BaseModel):
     web_gateway: WebGatewayConfig = Field(default_factory=WebGatewayConfig)
     grade_homework: GradeHomeworkConfig = Field(default_factory=GradeHomeworkConfig)
     image_gen: ImageGenConfig = Field(default_factory=ImageGenConfig)
+    image_vision: ImageVisionConfig = Field(default_factory=ImageVisionConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
 
 

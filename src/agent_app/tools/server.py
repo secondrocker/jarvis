@@ -6,6 +6,7 @@ from agent_app.config import Settings
 from agent_app.infrastructure.storage import ObjectStorage, create_object_storage
 from agent_app.infrastructure.web_gateway import WebGatewayClient, create_web_gateway
 from agent_app.tools.image_tools import register_image_tools
+from agent_app.tools.image_vision_tools import register_image_vision_tools
 from agent_app.tools.pdf.tool import register_pdf_tools
 from agent_app.tools.storage_tools import register_storage_tools
 from agent_app.tools.web_tools import register_web_tools
@@ -36,5 +37,12 @@ def build_mcp_server(
     if resolved_web is not None:
         register_web_tools(mcp, client=resolved_web)
     if settings.image_gen.base_url is not None:
-        register_image_tools(mcp, config=settings.image_gen, storage=resolved_storage)
+        register_image_tools(
+            mcp,
+            config=settings.image_gen,
+            storage=resolved_storage,
+            vision_config=settings.image_vision,
+        )
+    if settings.image_vision.base_url is not None:
+        register_image_vision_tools(mcp, config=settings.image_vision, storage=resolved_storage)
     return mcp

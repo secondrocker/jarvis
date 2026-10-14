@@ -35,13 +35,17 @@ def fake_storage() -> FakeObjectStorage:
 
 @pytest.fixture
 def image_settings() -> Settings:
-    """带图像生成配置的应用配置。"""
+    """带图像生成配置的应用配置（含 gpt-6-luna 复用的 image_vision 网关）。"""
     return Settings.model_validate(
         {
             "openai": {"api_key": SecretStr("test-key"), "model": "gpt-4o-mini"},
             "image_gen": {
                 "base_url": "https://gemini.test",
                 "api_key": SecretStr("sk-test"),
+            },
+            "image_vision": {
+                "base_url": "https://codex.test",
+                "api_key": SecretStr("sk-vision"),
             },
         }
     )
@@ -67,8 +71,10 @@ def patch_generation(monkeypatch):
 
     def fake_post(url, *, json, headers, timeout):  # noqa: ANN001
         captured["post_payload"] = {"url": url, "json": json, "headers": headers}
-        message = {"content": captured["content"]}
-        if isinstance(captured["content"], list):
+        if isinstance(captured["content"], dict):
+            # dict 形态直接作为完整 message（含 tool_calls 等字段）。
+            message = captured["content"]
+        else:
             message = {"content": captured["content"]}
         return _FakeResponse(json_body={"choices": [{"message": message}]})
 
@@ -229,3 +235,146 @@ async def test_generate_image_preserves_signed_url_in_all_mcp_fields(
     for data in (result.data, result.structured_content, json.loads(result.content[0].text)):
         assert data["url"] == expected
         assert all(image["url"] == expected for image in data["images"])
+
+
+@pytest.mark.asyncio
+async def test_generate_image_with_luna_model(mcp_server, fake_storage, patch_generation) -> None:
+    """model=gpt-6-luna 走 image_vision 网关并解析 image_generation 工具结果。"""
+    import base64
+    import json as jsonlib
+
+    encoded = base64.b64encode(_PNG_BYTES).decode()
+    patch_generation["content"] = {
+        "content": "已为你生成图片。",
+        "tool_calls": [
+            {
+                "id": "ig_test",
+                "type": "function",
+                "function": {
+                    "name": "image_generation",
+                    "arguments": jsonlib.dumps({"result": encoded}),
+                },
+            }
+        ],
+    }
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool(
+            "generate_image",
+            {"prompt": "画一只猫", "model": "gpt-6-luna"},
+        )
+
+    data = result.data
+    assert data["model"] == "gpt-6-luna"
+    assert data["key"].endswith(".png")
+    assert fake_storage.uploads[0][0] == data["key"]
+    assert fake_storage.uploads[0][1] == "image/png"
+    # 请求发往 image_vision 网关，携带 image_generation 工具与独立鉴权。
+    body = patch_generation["post_payload"]
+    assert body["url"] == "https://codex.test/v1/chat/completions"
+    assert body["json"]["model"] == "gpt-6-luna"
+    assert body["json"]["tools"] == [{"type": "image_generation"}]
+    assert body["headers"]["Authorization"] == "Bearer sk-vision"
+
+
+@pytest.mark.asyncio
+async def test_generate_image_luna_without_vision_config_raises(fake_storage) -> None:
+    """image_vision 网关未配置时，gpt-6-luna 调用返回明确错误。"""
+    settings = Settings.model_validate(
+        {
+            "openai": {"api_key": SecretStr("test-key"), "model": "gpt-4o-mini"},
+            "image_gen": {
+                "base_url": "https://gemini.test",
+                "api_key": SecretStr("sk-test"),
+            },
+        }
+    )
+    server = build_mcp_server(settings=settings, storage=fake_storage)
+    async with Client(server) as client:
+        with pytest.raises(ToolError, match="not configured"):
+            await client.call_tool("generate_image", {"prompt": "画一只猫", "model": "gpt-6-luna"})
+
+
+@pytest.mark.asyncio
+async def test_generate_image_rejects_unknown_model(mcp_server) -> None:
+    """未注册的模型名在校验阶段即被拒绝。"""
+    async with Client(mcp_server) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool("generate_image", {"prompt": "画一只猫", "model": "dall-e-3"})
+
+
+@pytest.mark.asyncio
+async def test_generate_image_falls_back_to_luna(mcp_server, fake_storage, monkeypatch) -> None:
+    """gemini 生图无图时自动降级到 gpt-6-luna 并成功交付。"""
+    import base64
+    import json as jsonlib
+
+    encoded = base64.b64encode(_PNG_BYTES).decode()
+    luna_message = {
+        "content": "已为你生成图片。",
+        "tool_calls": [
+            {
+                "id": "ig_test",
+                "type": "function",
+                "function": {
+                    "name": "image_generation",
+                    "arguments": jsonlib.dumps({"result": encoded}),
+                },
+            }
+        ],
+    }
+    calls: list[dict] = []
+
+    def fake_post(url, *, json, headers, timeout):  # noqa: ANN001
+        calls.append({"url": url, "json": json})
+        if "codex.test" in url:
+            message = luna_message
+        else:
+            # gemini 反代返回无图正文，触发降级。
+            message = {"content": "抱歉，我无法生成该图片。"}
+        return _FakeResponse(json_body={"choices": [{"message": message}]})
+
+    monkeypatch.setattr(image_tools.httpx, "post", fake_post)
+
+    async with Client(mcp_server) as client:
+        result = await client.call_tool("generate_image", {"prompt": "画一只猫"})
+
+    data = result.data
+    assert data["model"] == "gpt-6-luna"
+    assert data["fallback"] is True
+    assert data["key"].endswith(".png")
+    # 先打 gemini 反代，失败后再打 luna 网关。
+    assert "gemini.test" in calls[0]["url"]
+    assert "codex.test" in calls[1]["url"]
+    assert calls[1]["json"]["tools"] == [{"type": "image_generation"}]
+
+
+@pytest.mark.asyncio
+async def test_generate_image_fallback_disabled(fake_storage, monkeypatch) -> None:
+    """luna_fallback=false 时不降级，gemini 失败直接报错。"""
+    from fastmcp import FastMCP
+
+    from agent_app.config import ImageGenConfig, ImageVisionConfig
+    from agent_app.tools.image_tools import register_image_tools
+
+    mcp = FastMCP("Test")
+    register_image_tools(
+        mcp,
+        config=ImageGenConfig(
+            base_url="https://gemini.test",
+            api_key=SecretStr("sk-test"),
+            luna_fallback=False,
+        ),
+        storage=fake_storage,
+        vision_config=ImageVisionConfig(
+            base_url="https://codex.test", api_key=SecretStr("sk-vision")
+        ),
+    )
+
+    def fake_post(url, *, json, headers, timeout):  # noqa: ANN001
+        return _FakeResponse(json_body={"choices": [{"message": {"content": "抱歉，无法生成"}}]})
+
+    monkeypatch.setattr(image_tools.httpx, "post", fake_post)
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool("generate_image", {"prompt": "画一只猫"})

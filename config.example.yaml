@@ -33,7 +33,21 @@ image_gen:
   base_url: https://gemini.leegoo.ltd
   api_key: sk-gemini-替换为你的-key
   model: gemini-image
+  # gpt-6-luna 生图在 image_vision 网关上请求的模型名(model=gpt-6-luna 或降级时使用)
+  luna_model: gpt-6-luna
+  # gemini 生图失败时是否自动降级到 gpt-6-luna(需 image_vision 已配置)
+  luna_fallback: true
   timeout_seconds: 180
+
+# Gemini 图像内容识别(vision, OpenAI 兼容反代);未配置则不注册 recognize_image / organize_images 工具
+image_vision:
+  base_url: https://gemini.leegoo.ltd
+  api_key: sk-gemini-替换为你的-key
+  model: gemini-3.8-flash
+  fallback_model: gemini-3.6-flash
+  timeout_seconds: 120
+  max_image_edge: 1280
+  batch_limit: 20
 
 # 作业批改(小程序)
 grade_homework:
