@@ -17,7 +17,7 @@ class ImageGenerateInput(BaseModel):
     prompt: str = Field(min_length=1)
     aspect_ratio: AspectRatio | None = None
     path: str | None = None
-    model: ImageModel = "gemini"
+    model: ImageModel = "gpt-6-luna"
 
     @field_validator("prompt")
     @classmethod

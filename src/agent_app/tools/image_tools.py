@@ -10,12 +10,14 @@
 import json
 import re
 from datetime import UTC, datetime
+from io import BytesIO
 from typing import Any
 from uuid import uuid4
 
 import httpx
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from PIL import Image
 from pydantic import ValidationError
 
 from agent_app.config import ImageGenConfig, ImageVisionConfig
@@ -258,6 +260,108 @@ def _request_generation(config: ImageGenConfig, prompt: str) -> str:
     return str(content)
 
 
+# 上游安全拒绝的正文话术标记（中英双语，小写匹配）。
+# gpt-6-luna 被内容政策拒绝时不一定带 refusal 字段或 content_filter 终止原因，
+# 常以纯文字道歉回复（"抱歉，我不能生成……"），据此识别并给出明确错误。
+_REFUSAL_MARKERS: tuple[str, ...] = (
+    "抱歉",
+    "对不起",
+    "不能生成",
+    "无法生成",
+    "无法创建",
+    "不能创建",
+    "违反政策",
+    "内容政策",
+    "sorry",
+    "cannot",
+    "can't",
+    "unable to",
+    "not able to",
+    "inappropriate",
+    "policy",
+)
+
+
+def _looks_like_refusal(content: str) -> bool:
+    """判断正文是否为上游内容政策的文字拒绝（而非正常图片说明）。"""
+    lowered = content.lower()
+    return any(marker in lowered for marker in _REFUSAL_MARKERS)
+
+
+# 上游安全拒绝的统一公开消息：降级逻辑据此识别并跳过 fallback。
+_SAFETY_REFUSAL_MESSAGE = "Image generation was refused by the upstream safety policy"
+
+
+def _safety_refusal_error() -> AppError:
+    """构造上游安全拒绝错误（gemini 与 luna 链路共用）。"""
+    return AppError(ErrorCode.UPSTREAM_UNAVAILABLE, _SAFETY_REFUSAL_MESSAGE)
+
+
+def _stream_chat_completion(
+    vision: ImageVisionConfig,
+    payload: dict[str, Any],
+    headers: dict[str, str],
+) -> tuple[dict[str, Any], str | None]:
+    """以 SSE 流式调用 chat completions 并聚合为非流式等价的消息结构。
+
+    流式模式下 tool_calls 的 function.arguments 按分片到达，需按 index
+    累积后整体解析；content/refusal 同理累积拼接。
+
+    参数:
+        vision: image_vision 网关配置。
+        payload: 已含 stream=True 的请求体。
+        headers: 认证等请求头。
+
+    返回值:
+        (聚合后的 message 字典, finish_reason)；finish_reason 可能缺失为 None。
+    """
+    content_parts: list[str] = []
+    refusal_parts: list[str] = []
+    tools: dict[int, dict[str, Any]] = {}
+    finish_reason: str | None = None
+    with httpx.stream(
+        "POST",
+        f"{vision.base_url}/v1/chat/completions",  # type: ignore[operator]
+        json=payload,
+        headers=headers,
+        timeout=vision.timeout_seconds,
+    ) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            line = line.strip()
+            if not line.startswith("data: "):
+                continue
+            data = line[len("data: ") :]
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except ValueError:
+                continue
+            choice = (chunk.get("choices") or [None])[0]
+            if not choice:
+                continue
+            finish_reason = choice.get("finish_reason") or finish_reason
+            delta = choice.get("delta") or {}
+            if delta.get("content"):
+                content_parts.append(str(delta["content"]))
+            if delta.get("refusal"):
+                refusal_parts.append(str(delta["refusal"]))
+            for call in delta.get("tool_calls") or []:
+                index = call.get("index") or 0
+                slot = tools.setdefault(index, {"name": None, "arguments": ""})
+                function = call.get("function") or {}
+                if function.get("name"):
+                    slot["name"] = function["name"]
+                slot["arguments"] += function.get("arguments") or ""
+    message: dict[str, Any] = {
+        "content": "".join(content_parts),
+        "refusal": "".join(refusal_parts) or None,
+        "tool_calls": [{"function": slot} for _, slot in sorted(tools.items())],
+    }
+    return message, finish_reason
+
+
 def _request_luna_generation(
     vision: ImageVisionConfig,
     model: str,
@@ -288,50 +392,63 @@ def _request_luna_generation(
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "tools": [{"type": "image_generation"}],
+        # 必须流式：网关对非流式请求有约 60 秒整体超时，复杂 prompt 生图
+        # 超过该阈值会稳定 504；流式分块保持连接活跃可绕过（实测 95s 成功）。
+        "stream": True,
     }
     headers = {
         "Authorization": f"Bearer {vision.api_key.get_secret_value()}",  # type: ignore[union-attr]
         "Content-Type": "application/json",
     }
     try:
-        response = httpx.post(
-            f"{vision.base_url}/v1/chat/completions",  # type: ignore[operator]
-            json=payload,
-            headers=headers,
-            timeout=vision.timeout_seconds,
-        )
-        response.raise_for_status()
-        body = response.json()
+        message, finish_reason = _stream_chat_completion(vision, payload, headers)
     except (httpx.HTTPError, ValueError) as error:
         raise AppError(
             ErrorCode.UPSTREAM_UNAVAILABLE,
             "Image generation service is temporarily unavailable",
         ) from error
-    try:
-        message = body["choices"][0]["message"]
-    except (KeyError, IndexError, TypeError) as error:
-        raise AppError(
-            ErrorCode.UPSTREAM_UNAVAILABLE,
-            "Image generation service returned an unexpected response",
-        ) from error
+    if message.get("refusal") or finish_reason == "content_filter":
+        raise _safety_refusal_error()
     sources: list[dict[str, Any]] = []
     for call in message.get("tool_calls") or []:
         function = call.get("function") or {}
         if function.get("name") != "image_generation":
             continue
         try:
-            result = json.loads(function.get("arguments") or "{}").get("result", "")
+            arguments = json.loads(function.get("arguments") or "{}")
+            result = arguments.get("result")
+            if not isinstance(result, str) or not result.strip():
+                continue
             data = base64.b64decode(re.sub(r"\s+", "", result), validate=True)
-        except (ValueError, TypeError, binascii.Error):
+        except (ValueError, TypeError, AttributeError, binascii.Error):
             continue
-        sniffed = _sniff_image(data) or ("png", "image/png")
-        sources.append({"data": data, "extension": sniffed[0], "content_type": sniffed[1]})
+        sniffed = _validated_image(data)
+        if sniffed:
+            sources.append({"data": data, "extension": sniffed[0], "content_type": sniffed[1]})
     # 兜底：个别网关可能直接把图片内嵌在正文中返回。
-    if not sources:
-        content = message.get("content")
-        if isinstance(content, str):
-            sources = _extract_image_sources(content)
+    content = message.get("content")
+    if not sources and isinstance(content, str):
+        sources = _extract_image_sources(content)
+    # 仍未取得图片且正文是拒绝性话术时，视为被上游内容政策拒绝，
+    # 抛出明确的安全拒绝错误（区别于笼统的"未生成图片"）。
+    if not sources and isinstance(content, str) and _looks_like_refusal(content):
+        raise _safety_refusal_error()
     return sources
+
+
+def _validated_image(data: bytes) -> tuple[str, str] | None:
+    """只接受可完整解码的图片，拒绝空数据、截断及伪造文件头。"""
+    sniffed = _sniff_image(data)
+    if not sniffed:
+        return None
+    try:
+        with Image.open(BytesIO(data)) as image:
+            image.verify()
+        with Image.open(BytesIO(data)) as image:
+            image.load()
+    except (OSError, ValueError, SyntaxError):
+        return None
+    return sniffed
 
 
 def register_image_tools(
@@ -356,15 +473,15 @@ def register_image_tools(
         prompt: str,
         aspect_ratio: str | None = None,
         path: str | None = None,
-        model: str = "gemini",
+        model: str = "gpt-6-luna",
     ) -> dict[str, Any]:
         """根据自然语言要求生成图片并上传对象存储，返回可下载 URL。
 
         prompt 为图片内容描述（支持中英文）；aspect_ratio 可选，取值
         1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 9:16 / 16:9 / 21:9，缺省由模型自选。
-        model 可选，取值 gemini（默认，gemini-web2api 反代）或
-        gpt-6-luna（经 image_vision 网关的 image_generation 工具）。
-        gemini 失败时自动降级重试 gpt-6-luna（返回值 fallback=true）。
+        model 可选，取值 gpt-6-luna（默认，经 image_vision 网关的
+        image_generation 工具）或 gemini（gemini-web2api 反代）。
+        显式选择 gemini 失败时自动降级重试 gpt-6-luna（返回值 fallback=true）。
         生成图片按内容自动归类到 images/<category>/<日期>/<id>.<ext>；
         path 可选，为自定义存储路径（含文件名，如 "assets/poster.png"），
         传入时固定使用该路径：无扩展名自动补齐，多张图在文件名后追加
@@ -374,7 +491,7 @@ def register_image_tools(
             prompt: 图片内容描述。
             aspect_ratio: 画面比例（宽:高），可选。
             path: 自定义存储路径（含文件名），可选；缺省按内容自动归类。
-            model: 生图模型，gemini（默认）或 gpt-6-luna。
+            model: 生图模型，gpt-6-luna（默认）或 gemini。
 
         返回值:
             含 key、url（首张图）、prompt、aspect_ratio、path、model
@@ -405,12 +522,19 @@ def register_image_tools(
                     content = _request_generation(config, full_prompt)
                     sources = _extract_image_sources(content)
                     if not sources:
+                        if _looks_like_refusal(content):
+                            # gemini 反代常以纯文字拒绝（"我无法生成……"），
+                            # 明确归类为安全拒绝且不触发降级重试。
+                            raise _safety_refusal_error()
                         raise AppError(
                             ErrorCode.UPSTREAM_UNAVAILABLE,
                             "No image was generated for this prompt",
                         )
                     used_model = "gemini"
-                except AppError:
+                except AppError as error:
+                    # 安全拒绝不降级：违规 prompt 不应再交给另一个模型重试。
+                    if error.public_message == _SAFETY_REFUSAL_MESSAGE:
+                        raise
                     # gemini 生图失败时自动降级到 gpt-6-luna（可配置关闭）。
                     if not config.luna_fallback or vision_config is None:
                         raise
@@ -437,6 +561,10 @@ def register_image_tools(
                         continue
                     data, extension, content_type = downloaded
                     origin = source["url"]
+                validated = _validated_image(data)
+                if not validated:
+                    continue
+                extension, content_type = validated
                 if params.path:
                     key = _custom_key(params.path, extension, len(images))
                 else:
