@@ -301,6 +301,7 @@ def _request_luna_generation(
     vision: ImageVisionConfig,
     model: str,
     prompt: str,
+    retries: int = 0,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """经 image_vision 网关的 /v1/responses SSE 流式接口生成图片。
 
@@ -311,10 +312,15 @@ def _request_luna_generation(
     response.output_item.done 事件的 image_generation_call.result 中
     以 base64 返回（上游实际生图模型固定为 gpt-image-2）。
 
+    账号池中 free/失效账号会被上游静默剥掉生图工具（模型改回文字），
+    导致偶发无图结果；对此在 retries 次数内自动重试（重试会换到池中
+    其他账号）。安全拒绝不重试。
+
     参数:
         vision: image_vision 网关配置（base_url/api_key 必须已配置）。
         model: 编排模型名（默认 gpt-6-luna，由其调用生图工具）。
         prompt: 已并入比例要求的完整提示词。
+        retries: 无图结果时的额外重试次数（仅针对"模型未调用生图工具"）。
 
     返回值:
         (图片来源列表, revised_prompt)：来源项含 data/extension/
@@ -343,74 +349,105 @@ def _request_luna_generation(
         "Authorization": f"Bearer {vision.api_key.get_secret_value()}",  # type: ignore[union-attr]
         "Content-Type": "application/json",
     }
-    sources: list[dict[str, Any]] = []
-    revised_prompt: str | None = None
-    error_message = ""
-    try:
-        with httpx.stream(
-            "POST",
-            f"{vision.base_url}/v1/responses",  # type: ignore[operator]
-            json=payload,
-            headers=headers,
-            timeout=vision.timeout_seconds,
-        ) as response:
-            if response.status_code >= 400:
-                body = response.read()
-                detail = ""
-                try:
-                    detail = str(json.loads(body).get("error", {}).get("message", ""))
-                except ValueError:
-                    pass
-                if _looks_like_refusal(detail):
-                    raise _safety_refusal_error()
-                raise AppError(
-                    ErrorCode.UPSTREAM_UNAVAILABLE,
-                    "Image generation service is temporarily unavailable",
-                )
-            for line in response.iter_lines():
-                line = line.strip()
-                if not line.startswith("data: "):
-                    continue
-                data = line[len("data: ") :]
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except ValueError:
-                    continue
-                event_type = chunk.get("type")
-                if event_type == "response.output_item.done":
-                    item = chunk.get("item") or {}
-                    if item.get("type") != "image_generation_call":
-                        continue
-                    revised_prompt = revised_prompt or item.get("revised_prompt")
-                    encoded = item.get("result")
-                    if not isinstance(encoded, str) or not encoded.strip():
-                        continue
+
+    def _attempt() -> tuple[list[dict[str, Any]], str | None, str]:
+        """单次流式尝试，返回 (图片来源, revised_prompt, 模型文字输出)。"""
+        sources: list[dict[str, Any]] = []
+        revised_prompt: str | None = None
+        error_message = ""
+        text_parts: list[str] = []
+        try:
+            with httpx.stream(
+                "POST",
+                f"{vision.base_url}/v1/responses",  # type: ignore[operator]
+                json=payload,
+                headers=headers,
+                timeout=vision.timeout_seconds,
+            ) as response:
+                if response.status_code >= 400:
+                    body = response.read()
+                    detail = ""
                     try:
-                        raw = base64.b64decode(re.sub(r"\s+", "", encoded), validate=True)
-                    except (ValueError, binascii.Error):
+                        detail = str(json.loads(body).get("error", {}).get("message", ""))
+                    except ValueError:
+                        pass
+                    if _looks_like_refusal(detail):
+                        raise _safety_refusal_error()
+                    raise AppError(
+                        ErrorCode.UPSTREAM_UNAVAILABLE,
+                        "Image generation service is temporarily unavailable",
+                    )
+                for line in response.iter_lines():
+                    line = line.strip()
+                    if not line.startswith("data: "):
                         continue
-                    sniffed = _validated_image(raw)
-                    if sniffed:
-                        sources.append(
-                            {"data": raw, "extension": sniffed[0], "content_type": sniffed[1]}
-                        )
-                elif event_type in ("error", "response.failed"):
-                    error = chunk.get("error") or {}
-                    error_message = str(error.get("message") or chunk.get("message") or "")
-    except httpx.HTTPError as error:
-        raise AppError(
-            ErrorCode.UPSTREAM_UNAVAILABLE,
-            "Image generation service is temporarily unavailable",
-        ) from error
-    if not sources and error_message:
-        # 流内错误：内容政策拒绝归类为安全拒绝（不触发降级重试）。
-        if _looks_like_refusal(error_message):
+                    data = line[len("data: ") :]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError:
+                        continue
+                    event_type = chunk.get("type")
+                    if event_type == "response.output_item.done":
+                        item = chunk.get("item") or {}
+                        if item.get("type") == "message":
+                            # 模型文字（工具被剥除时模型会改回文字回复）。
+                            for part in item.get("content") or []:
+                                if part.get("type") == "output_text":
+                                    text_parts.append(str(part.get("text") or ""))
+                        if item.get("type") != "image_generation_call":
+                            continue
+                        revised_prompt = revised_prompt or item.get("revised_prompt")
+                        encoded = item.get("result")
+                        if not isinstance(encoded, str) or not encoded.strip():
+                            continue
+                        try:
+                            raw = base64.b64decode(re.sub(r"\s+", "", encoded), validate=True)
+                        except (ValueError, binascii.Error):
+                            continue
+                        sniffed = _validated_image(raw)
+                        if sniffed:
+                            sources.append(
+                                {"data": raw, "extension": sniffed[0], "content_type": sniffed[1]}
+                            )
+                    elif event_type == "response.output_text.delta":
+                        text_parts.append(str(chunk.get("delta") or ""))
+                    elif event_type in ("error", "response.failed"):
+                        error = chunk.get("error") or {}
+                        error_message = str(error.get("message") or chunk.get("message") or "")
+        except httpx.HTTPError as error:
+            raise AppError(
+                ErrorCode.UPSTREAM_UNAVAILABLE,
+                "Image generation service is temporarily unavailable",
+            ) from error
+        if not sources and error_message:
+            # 流内错误：内容政策拒绝归类为安全拒绝（不触发降级重试）。
+            if _looks_like_refusal(error_message):
+                raise _safety_refusal_error()
+            raise AppError(
+                ErrorCode.UPSTREAM_UNAVAILABLE,
+                "Image generation service is temporarily unavailable",
+            )
+        model_text = "".join(text_parts).strip()
+        if not sources and _looks_like_refusal(model_text):
+            # 模型以纯文字拒绝（无图）：同样归类为安全拒绝且不重试。
             raise _safety_refusal_error()
+        return sources, revised_prompt, model_text
+
+    sources, revised_prompt, model_text = _attempt()
+    for _ in range(max(retries, 0)):
+        if sources:
+            break
+        # 无图结果重试：账号池轮转后往往落在可用账号上；拒绝错误已在
+        # _attempt 内抛出，不会走到这里。
+        sources, revised_prompt, model_text = _attempt()
+    if not sources and model_text:
+        # 把模型原话附进错误，便于定位（如工具被上游剥除时的文字回复）。
+        snippet = model_text[:200]
         raise AppError(
             ErrorCode.UPSTREAM_UNAVAILABLE,
-            "Image generation service is temporarily unavailable",
+            f"No image was generated for this prompt; model replied: {snippet}",
         )
     return sources, revised_prompt
 
@@ -497,7 +534,7 @@ def register_image_tools(
                         "gpt-6-luna image generation is not configured",
                     )
                 sources, revised_prompt = _request_luna_generation(
-                    vision_config, config.luna_model, full_prompt
+                    vision_config, config.luna_model, full_prompt, config.luna_retries
                 )
                 used_model = "gpt-6-luna"
             else:
@@ -524,7 +561,7 @@ def register_image_tools(
                     if vision_config.base_url is None:
                         raise
                     sources, revised_prompt = _request_luna_generation(
-                        vision_config, config.luna_model, full_prompt
+                        vision_config, config.luna_model, full_prompt, config.luna_retries
                     )
                     used_model = "gpt-6-luna"
                     fallback_used = True

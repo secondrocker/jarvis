@@ -45,12 +45,16 @@ def patch_luna_responses(
     *,
     error: dict | None = None,
     stream_error: str | None = None,
+    text: str | None = None,
+    sequence: list[dict] | None = None,
 ) -> list[dict]:
     """patch httpx.stream：luna 网关返回 /v1/responses SSE 流。
 
     items 为 image_generation_call 列表（含 result/revised_prompt）；
     error 形如 {"status": 400, "message": "..."} 时返回 HTTP 错误体；
-    stream_error 在流内发送 error 事件。返回捕获的请求列表。
+    stream_error 在流内发送 error 事件；text 为模型文字输出；
+    sequence 提供逐次调用的差异响应（每项可含 items/text/stream_error，
+    超出部分复用最后一项），用于验证重试行为。返回捕获的请求列表。
     """
     import json as jsonlib
 
@@ -59,23 +63,36 @@ def patch_luna_responses(
     def sse(chunk: dict) -> str:
         return "data: " + jsonlib.dumps(chunk, ensure_ascii=False)
 
-    lines: list[str] = []
-    for item in items or []:
-        done = {
-            "type": "response.output_item.done",
-            "item": {"type": "image_generation_call", **item},
-        }
-        lines.append(sse(done))
-    if stream_error is not None:
-        lines.append(sse({"type": "error", "error": {"message": stream_error}}))
-    lines.append(sse({"type": "response.completed"}))
-    lines.append("data: [DONE]")
+    def build_lines(spec: dict) -> list[str]:
+        lines: list[str] = []
+        for item in spec.get("items") or []:
+            done = {
+                "type": "response.output_item.done",
+                "item": {"type": "image_generation_call", **item},
+            }
+            lines.append(sse(done))
+        if spec.get("text"):
+            lines.append(sse({"type": "response.output_text.delta", "delta": spec["text"]}))
+        if spec.get("stream_error") is not None:
+            lines.append(sse({"type": "error", "error": {"message": spec["stream_error"]}}))
+        lines.append(sse({"type": "response.completed"}))
+        lines.append("data: [DONE]")
+        return lines
+
+    default_spec = {"items": items or [], "text": text, "stream_error": stream_error}
+    state = {"index": 0}
 
     class _FakeStreamResponse:
         status_code = error["status"] if error else 200
 
+        def __init__(self, spec_index: int = 0) -> None:
+            spec = default_spec
+            if sequence:
+                spec = sequence[min(spec_index, len(sequence) - 1)]
+            self._lines = build_lines(spec)
+
         def iter_lines(self):  # noqa: ANN202
-            return iter(lines)
+            return iter(self._lines)
 
         def read(self) -> bytes:
             if error:
@@ -84,7 +101,9 @@ def patch_luna_responses(
 
     class _FakeStreamContext:
         def __enter__(self):  # noqa: ANN204
-            return _FakeStreamResponse()
+            spec_index = state["index"]
+            state["index"] += 1
+            return _FakeStreamResponse(spec_index)
 
         def __exit__(self, *exc_info: object) -> bool:
             return False
@@ -528,6 +547,75 @@ async def test_luna_upstream_error_without_refusal_is_unavailable(
     async with Client(mcp_server) as client:
         with pytest.raises(ToolError, match="temporarily unavailable"):
             await client.call_tool("generate_image", {"prompt": "画一只猫", "model": "gpt-6-luna"})
+    assert not fake_storage.uploads
+
+
+@pytest.mark.asyncio
+async def test_luna_no_image_text_refusal_stops_without_retry(
+    mcp_server, fake_storage, monkeypatch
+):
+    """模型以纯文字拒绝（无图）时归类为安全拒绝且不重试。"""
+    captured = patch_luna_responses(
+        monkeypatch, sequence=[{"text": "抱歉，我目前无法在此对话中直接生成或返回图片。"}]
+    )
+    async with Client(mcp_server) as client:
+        with pytest.raises(ToolError, match="upstream safety policy"):
+            await client.call_tool(
+                "generate_image", {"prompt": "adult fashion", "model": "gpt-6-luna"}
+            )
+    assert len(captured) == 1  # 拒绝不重试
+    assert not fake_storage.uploads
+
+
+@pytest.mark.asyncio
+async def test_luna_empty_result_retries_then_succeeds(mcp_server, fake_storage, monkeypatch):
+    """首次无图（工具被上游剥除，模型回文字）时自动重试并成功出图。"""
+    import base64
+
+    encoded = base64.b64encode(_PNG_BYTES).decode()
+    captured = patch_luna_responses(
+        monkeypatch,
+        sequence=[
+            {"text": "我画了一只橘猫。"},  # 无 image_generation_call
+            {"items": [{"result": encoded, "revised_prompt": "优化后的提示词"}]},
+        ],
+    )
+    async with Client(mcp_server) as client:
+        result = await client.call_tool(
+            "generate_image", {"prompt": "画一只猫", "model": "gpt-6-luna"}
+        )
+    assert len(captured) == 2  # 重试了一次
+    assert result.data["key"].endswith(".png")
+    assert result.data["revised_prompt"] == "优化后的提示词"
+    assert fake_storage.uploads
+
+
+@pytest.mark.asyncio
+async def test_luna_empty_result_error_includes_model_text(fake_storage, monkeypatch) -> None:
+    """重试耗尽仍无图时，错误信息带上模型原话便于定位。"""
+    from fastmcp import FastMCP
+
+    from agent_app.config import ImageGenConfig, ImageVisionConfig
+    from agent_app.tools.image_tools import register_image_tools
+
+    mcp = FastMCP("Test")
+    register_image_tools(
+        mcp,
+        config=ImageGenConfig(
+            base_url="https://gemini.test",
+            api_key=SecretStr("sk-test"),
+            luna_retries=1,
+        ),
+        storage=fake_storage,
+        vision_config=ImageVisionConfig(
+            base_url="https://codex.test", api_key=SecretStr("sk-vision")
+        ),
+    )
+    captured = patch_luna_responses(monkeypatch, text="我画了一只橘猫（SVG 描述）。")
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError, match="model replied"):
+            await client.call_tool("generate_image", {"prompt": "画一只猫", "model": "gpt-6-luna"})
+    assert len(captured) == 2  # 初次 + 1 次重试
     assert not fake_storage.uploads
 
 

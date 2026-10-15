@@ -109,6 +109,9 @@ class ImageGenConfig(BaseModel):
     # gpt-6-luna 生图在 image_vision 网关 /v1/responses 请求的编排模型名
     # （由其调用 image_generation 工具，上游生图后端固定 gpt-image-2）。
     luna_model: str = Field(default="gpt-6-luna", min_length=1)
+    # 账号池中 free/失效账号会被上游静默剥掉生图工具导致偶发无图，
+    # 对"无图结果"的重试次数（0-2）。
+    luna_retries: int = Field(default=1, ge=0, le=2)
     # gemini 生图失败时是否自动降级到 gpt-6-luna（需 image_vision 已配置）。
     luna_fallback: bool = True
     timeout_seconds: float = Field(default=180.0, gt=0)
