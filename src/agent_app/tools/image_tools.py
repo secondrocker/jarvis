@@ -7,6 +7,7 @@
 错误处理范式与 storage_tools.py 一致：AppError 转为 ToolError，不抛裸异常。
 """
 
+import json
 import re
 from datetime import UTC, datetime
 from io import BytesIO
@@ -301,17 +302,18 @@ def _request_luna_generation(
     model: str,
     prompt: str,
 ) -> tuple[list[dict[str, Any]], str | None]:
-    """经 image_vision 网关的 OpenAI Images 兼容端点生成图片。
+    """经 image_vision 网关的 /v1/responses SSE 流式接口生成图片。
 
-    codex-proxy 提供 POST /v1/images/generations：代理把请求转成 Codex
-    Responses 的 image_generation 工具调用（上游实际生图模型固定为
-    gpt-image-2），返回 {data: [{b64_json, revised_prompt}]}。相比
-    chat completions + tool_calls 路径，该端点是文档保证的稳定图像
-    payload 通道。
+    codex-proxy 的非流式端点（images/generations、chat completions）受
+    网关约 60 秒整体超时约束，复杂 prompt 生图常超时 504；/v1/responses
+    流式分块保持连接活跃可绕过该限制（文档标注的稳定图像 payload 通道）。
+    生图通过 tools=[{"type":"image_generation"}] 触发，图片在
+    response.output_item.done 事件的 image_generation_call.result 中
+    以 base64 返回（上游实际生图模型固定为 gpt-image-2）。
 
     参数:
         vision: image_vision 网关配置（base_url/api_key 必须已配置）。
-        model: 请求体携带的模型名（默认 gpt-image-2，上游会强制改写）。
+        model: 编排模型名（默认 gpt-6-luna，由其调用生图工具）。
         prompt: 已并入比例要求的完整提示词。
 
     返回值:
@@ -326,59 +328,90 @@ def _request_luna_generation(
     import base64
     import binascii
 
-    payload = {"model": model, "prompt": prompt, "output_format": "png"}
+    payload = {
+        "model": model,
+        "stream": True,
+        "input": [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            }
+        ],
+        "tools": [{"type": "image_generation"}],
+    }
     headers = {
         "Authorization": f"Bearer {vision.api_key.get_secret_value()}",  # type: ignore[union-attr]
         "Content-Type": "application/json",
     }
+    sources: list[dict[str, Any]] = []
+    revised_prompt: str | None = None
+    error_message = ""
     try:
-        response = httpx.post(
-            f"{vision.base_url}/v1/images/generations",  # type: ignore[operator]
+        with httpx.stream(
+            "POST",
+            f"{vision.base_url}/v1/responses",  # type: ignore[operator]
             json=payload,
             headers=headers,
             timeout=vision.timeout_seconds,
-        )
+        ) as response:
+            if response.status_code >= 400:
+                body = response.read()
+                detail = ""
+                try:
+                    detail = str(json.loads(body).get("error", {}).get("message", ""))
+                except ValueError:
+                    pass
+                if _looks_like_refusal(detail):
+                    raise _safety_refusal_error()
+                raise AppError(
+                    ErrorCode.UPSTREAM_UNAVAILABLE,
+                    "Image generation service is temporarily unavailable",
+                )
+            for line in response.iter_lines():
+                line = line.strip()
+                if not line.startswith("data: "):
+                    continue
+                data = line[len("data: ") :]
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except ValueError:
+                    continue
+                event_type = chunk.get("type")
+                if event_type == "response.output_item.done":
+                    item = chunk.get("item") or {}
+                    if item.get("type") != "image_generation_call":
+                        continue
+                    revised_prompt = revised_prompt or item.get("revised_prompt")
+                    encoded = item.get("result")
+                    if not isinstance(encoded, str) or not encoded.strip():
+                        continue
+                    try:
+                        raw = base64.b64decode(re.sub(r"\s+", "", encoded), validate=True)
+                    except (ValueError, binascii.Error):
+                        continue
+                    sniffed = _validated_image(raw)
+                    if sniffed:
+                        sources.append(
+                            {"data": raw, "extension": sniffed[0], "content_type": sniffed[1]}
+                        )
+                elif event_type in ("error", "response.failed"):
+                    error = chunk.get("error") or {}
+                    error_message = str(error.get("message") or chunk.get("message") or "")
     except httpx.HTTPError as error:
         raise AppError(
             ErrorCode.UPSTREAM_UNAVAILABLE,
             "Image generation service is temporarily unavailable",
         ) from error
-    if response.status_code >= 400:
-        # 错误体为 {error: {message}}（OpenAI 格式）；内容政策拒绝常含
-        # 拒绝性话术，识别后抛安全拒绝错误（不触发降级重试）。
-        detail = ""
-        try:
-            detail = str(response.json().get("error", {}).get("message", ""))
-        except ValueError:
-            pass
-        if _looks_like_refusal(detail):
+    if not sources and error_message:
+        # 流内错误：内容政策拒绝归类为安全拒绝（不触发降级重试）。
+        if _looks_like_refusal(error_message):
             raise _safety_refusal_error()
         raise AppError(
             ErrorCode.UPSTREAM_UNAVAILABLE,
             "Image generation service is temporarily unavailable",
         )
-    try:
-        body = response.json()
-        items = body["data"] or []
-    except (ValueError, KeyError, TypeError) as error:
-        raise AppError(
-            ErrorCode.UPSTREAM_UNAVAILABLE,
-            "Image generation service returned an unexpected response",
-        ) from error
-    sources: list[dict[str, Any]] = []
-    revised_prompt: str | None = None
-    for item in items:
-        revised_prompt = revised_prompt or item.get("revised_prompt")
-        encoded = item.get("b64_json")
-        if not isinstance(encoded, str) or not encoded.strip():
-            continue
-        try:
-            data = base64.b64decode(re.sub(r"\s+", "", encoded), validate=True)
-        except (ValueError, binascii.Error):
-            continue
-        sniffed = _validated_image(data)
-        if sniffed:
-            sources.append({"data": data, "extension": sniffed[0], "content_type": sniffed[1]})
     return sources, revised_prompt
 
 
@@ -426,7 +459,7 @@ def register_image_tools(
         prompt 为图片内容描述（支持中英文）；aspect_ratio 可选，取值
         1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 9:16 / 16:9 / 21:9，缺省由模型自选。
         model 可选，取值 gpt-6-luna（默认，经 image_vision 网关的
-        /v1/images/generations 端点，上游实际生图模型为 gpt-image-2）
+        /v1/responses 流式接口，上游实际生图模型为 gpt-image-2）
         或 gemini（gemini-web2api 反代）。
         显式选择 gemini 失败时自动降级重试 gpt-6-luna（返回值 fallback=true）。
         生成图片按内容自动归类到 images/<category>/<日期>/<id>.<ext>；
@@ -464,7 +497,7 @@ def register_image_tools(
                         "gpt-6-luna image generation is not configured",
                     )
                 sources, revised_prompt = _request_luna_generation(
-                    vision_config, config.luna_image_model, full_prompt
+                    vision_config, config.luna_model, full_prompt
                 )
                 used_model = "gpt-6-luna"
             else:
@@ -491,7 +524,7 @@ def register_image_tools(
                     if vision_config.base_url is None:
                         raise
                     sources, revised_prompt = _request_luna_generation(
-                        vision_config, config.luna_image_model, full_prompt
+                        vision_config, config.luna_model, full_prompt
                     )
                     used_model = "gpt-6-luna"
                     fallback_used = True

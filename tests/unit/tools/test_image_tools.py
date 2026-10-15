@@ -39,30 +39,61 @@ class _FakeResponse:
         return self._json  # type: ignore[return-value]
 
 
-def patch_luna_images(
+def patch_luna_responses(
     monkeypatch,
     items: list[dict] | None = None,
     *,
     error: dict | None = None,
+    stream_error: str | None = None,
 ) -> list[dict]:
-    """patch httpx.post：luna 网关返回 /v1/images/generations 格式响应。
+    """patch httpx.stream：luna 网关返回 /v1/responses SSE 流。
 
-    items 为 data 列表（含 b64_json/revised_prompt）；error 形如
-    {"status": 400, "message": "..."} 时返回 OpenAI 错误体。
-    返回捕获的请求列表。
+    items 为 image_generation_call 列表（含 result/revised_prompt）；
+    error 形如 {"status": 400, "message": "..."} 时返回 HTTP 错误体；
+    stream_error 在流内发送 error 事件。返回捕获的请求列表。
     """
+    import json as jsonlib
+
     captured: list[dict] = []
 
-    def fake_post(url, *, json, headers, timeout):  # noqa: ANN001
-        captured.append({"url": url, "json": json, "headers": headers})
-        if error is not None:
-            return _FakeResponse(
-                status_code=error["status"],
-                json_body={"error": {"message": error["message"]}},
-            )
-        return _FakeResponse(json_body={"created": 1, "data": items or []})
+    def sse(chunk: dict) -> str:
+        return "data: " + jsonlib.dumps(chunk, ensure_ascii=False)
 
-    monkeypatch.setattr(image_tools.httpx, "post", fake_post)
+    lines: list[str] = []
+    for item in items or []:
+        done = {
+            "type": "response.output_item.done",
+            "item": {"type": "image_generation_call", **item},
+        }
+        lines.append(sse(done))
+    if stream_error is not None:
+        lines.append(sse({"type": "error", "error": {"message": stream_error}}))
+    lines.append(sse({"type": "response.completed"}))
+    lines.append("data: [DONE]")
+
+    class _FakeStreamResponse:
+        status_code = error["status"] if error else 200
+
+        def iter_lines(self):  # noqa: ANN202
+            return iter(lines)
+
+        def read(self) -> bytes:
+            if error:
+                return jsonlib.dumps({"error": {"message": error["message"]}}).encode()
+            return b"{}"
+
+    class _FakeStreamContext:
+        def __enter__(self):  # noqa: ANN204
+            return _FakeStreamResponse()
+
+        def __exit__(self, *exc_info: object) -> bool:
+            return False
+
+    def fake_stream(method, url, *, json, headers, timeout):  # noqa: ANN001
+        captured.append({"url": url, "json": json, "headers": headers})
+        return _FakeStreamContext()
+
+    monkeypatch.setattr(image_tools.httpx, "stream", fake_stream)
     return captured
 
 
@@ -304,13 +335,13 @@ async def test_generate_image_preserves_signed_url_in_all_mcp_fields(
 
 @pytest.mark.asyncio
 async def test_generate_image_with_luna_model(mcp_server, fake_storage, monkeypatch) -> None:
-    """model=gpt-6-luna 走 /v1/images/generations 并解析 b64_json 图片。"""
+    """model=gpt-6-luna 走 /v1/responses 流式并解析 image_generation_call。"""
     import base64
 
     encoded = base64.b64encode(_PNG_BYTES).decode()
-    captured = patch_luna_images(
+    captured = patch_luna_responses(
         monkeypatch,
-        [{"b64_json": encoded, "revised_prompt": "优化后的提示词"}],
+        [{"result": encoded, "revised_prompt": "优化后的提示词"}],
     )
 
     async with Client(mcp_server) as client:
@@ -326,12 +357,13 @@ async def test_generate_image_with_luna_model(mcp_server, fake_storage, monkeypa
     assert data["key"].endswith(".png")
     assert fake_storage.uploads[0][0] == data["key"]
     assert fake_storage.uploads[0][1] == "image/png"
-    # 请求发往 image_vision 网关的 images 端点，携带独立鉴权。
+    # 请求发往 image_vision 网关的 responses 流式端点，携带生图工具与独立鉴权。
     body = captured[0]
-    assert body["url"] == "https://codex.test/v1/images/generations"
-    assert body["json"]["model"] == "gpt-image-2"
-    assert body["json"]["prompt"] == "画一只猫"
-    assert body["json"]["output_format"] == "png"
+    assert body["url"] == "https://codex.test/v1/responses"
+    assert body["json"]["model"] == "gpt-6-luna"
+    assert body["json"]["stream"] is True
+    assert body["json"]["tools"] == [{"type": "image_generation"}]
+    assert body["json"]["input"][0]["content"][0]["text"] == "画一只猫"
     assert body["headers"]["Authorization"] == "Bearer sk-vision"
 
 
@@ -367,17 +399,14 @@ async def test_generate_image_falls_back_to_luna(mcp_server, fake_storage, monke
     import base64
 
     encoded = base64.b64encode(_PNG_BYTES).decode()
-    luna_body = {
-        "created": 1,
-        "data": [{"b64_json": encoded, "revised_prompt": "优化后的提示词"}],
-    }
-    calls: list[dict] = []
+    stream_calls = patch_luna_responses(
+        monkeypatch,
+        [{"result": encoded, "revised_prompt": "优化后的提示词"}],
+    )
+    post_calls: list[dict] = []
 
     def fake_post(url, *, json, headers, timeout):  # noqa: ANN001
-        calls.append({"url": url, "json": json})
-        if "codex.test" in url:
-            # 降级后走 /v1/images/generations，返回标准 Images 响应。
-            return _FakeResponse(json_body=luna_body)
+        post_calls.append({"url": url, "json": json})
         # gemini 反代返回无图正文（非拒绝话术），触发降级。
         return _FakeResponse(
             json_body={"choices": [{"message": {"content": "这是一段文字说明，未包含图片。"}}]}
@@ -393,10 +422,10 @@ async def test_generate_image_falls_back_to_luna(mcp_server, fake_storage, monke
     assert data["fallback"] is True
     assert data["revised_prompt"] == "优化后的提示词"
     assert data["key"].endswith(".png")
-    # 先打 gemini 反代，失败后再打 luna 网关的 images 端点。
-    assert "gemini.test" in calls[0]["url"]
-    assert calls[1]["url"] == "https://codex.test/v1/images/generations"
-    assert calls[1]["json"]["model"] == "gpt-image-2"
+    # 先打 gemini 反代（非流式），失败后再打 luna 网关的 responses 流式端点。
+    assert "gemini.test" in post_calls[0]["url"]
+    assert stream_calls[0]["url"] == "https://codex.test/v1/responses"
+    assert stream_calls[0]["json"]["tools"] == [{"type": "image_generation"}]
 
 
 @pytest.mark.asyncio
@@ -435,7 +464,7 @@ async def test_generate_image_fallback_disabled(fake_storage, monkeypatch) -> No
 async def test_luna_empty_or_invalid_result_never_uploads(
     mcp_server, fake_storage, monkeypatch, value
 ):
-    patch_luna_images(monkeypatch, [{"b64_json": value}])
+    patch_luna_responses(monkeypatch, [{"result": value}])
     async with Client(mcp_server) as client:
         with pytest.raises(ToolError, match="No image was generated"):
             await client.call_tool(
@@ -455,8 +484,8 @@ async def test_luna_empty_or_invalid_result_never_uploads(
 async def test_luna_safety_refusal_stops_without_upload_or_fallback(
     mcp_server, fake_storage, monkeypatch, message
 ):
-    """上游内容政策拒绝（错误体含拒绝话术）时给出明确安全拒绝错误。"""
-    patch_luna_images(monkeypatch, error={"status": 400, "message": message})
+    """上游内容政策拒绝（HTTP 错误体含拒绝话术）时给出明确安全拒绝错误。"""
+    patch_luna_responses(monkeypatch, error={"status": 400, "message": message})
     async with Client(mcp_server) as client:
         with pytest.raises(ToolError, match="upstream safety policy"):
             await client.call_tool(
@@ -466,11 +495,36 @@ async def test_luna_safety_refusal_stops_without_upload_or_fallback(
 
 
 @pytest.mark.asyncio
-async def test_luna_upstream_error_without_refusal_is_unavailable(
-    mcp_server, fake_storage, monkeypatch
+@pytest.mark.parametrize(
+    "message",
+    ["抱歉，我不能生成露骨色情内容。", "Sorry, I cannot generate explicit content."],
+)
+async def test_luna_stream_error_refusal_stops_without_upload(
+    mcp_server, fake_storage, monkeypatch, message
 ):
-    """非拒绝类上游错误（如 503）报服务不可用，而非安全拒绝。"""
-    patch_luna_images(monkeypatch, error={"status": 503, "message": "no available accounts"})
+    """流内 error 事件含拒绝话术时同样归类为安全拒绝。"""
+    patch_luna_responses(monkeypatch, stream_error=message)
+    async with Client(mcp_server) as client:
+        with pytest.raises(ToolError, match="upstream safety policy"):
+            await client.call_tool(
+                "generate_image", {"prompt": "adult fashion", "model": "gpt-6-luna"}
+            )
+    assert not fake_storage.uploads
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"error": {"status": 503, "message": "no available accounts"}},
+        {"stream_error": "upstream overloaded"},
+    ],
+)
+async def test_luna_upstream_error_without_refusal_is_unavailable(
+    mcp_server, fake_storage, monkeypatch, kwargs
+):
+    """非拒绝类上游错误报服务不可用，而非安全拒绝。"""
+    patch_luna_responses(monkeypatch, **kwargs)
     async with Client(mcp_server) as client:
         with pytest.raises(ToolError, match="temporarily unavailable"):
             await client.call_tool("generate_image", {"prompt": "画一只猫", "model": "gpt-6-luna"})
