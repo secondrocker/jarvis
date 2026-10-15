@@ -12,6 +12,7 @@ from agent_app.infrastructure.llm import create_chat_model
 from agent_app.infrastructure.storage import create_object_storage
 from agent_app.orchestration.executors import ExecutorDefinition
 from agent_app.schemas.tasks import SelectedMode
+from agent_app.tools.web_search_tools import create_web_agent_tools
 
 
 def create_agents(
@@ -22,6 +23,8 @@ def create_agents(
 ) -> dict[str, ExecutorDefinition]:
     """创建全部 Deep Agent 及其路由元数据。"""
     storage = create_object_storage(settings.s3)
+    # 搜索/阅读工具不做用量限制（需求明确要求）；未配置 api_key 时不注入。
+    web_tools = create_web_agent_tools(settings.zhipu_web) if settings.zhipu_web.enabled else None
     planning = create_solution_planning_agent(
         model=create_chat_model(
             settings,
@@ -29,6 +32,7 @@ def create_agents(
         ),
         checkpointer=checkpointer,
         skill_root=skill_root,
+        tools=web_tools,
     )
     info_price = create_info_price_agent(
         model=create_chat_model(
@@ -38,6 +42,7 @@ def create_agents(
         checkpointer=checkpointer,
         skill_root=skill_root,
         storage=storage,
+        web_tools=web_tools,
     )
     return {
         "solution_planning": ExecutorDefinition(

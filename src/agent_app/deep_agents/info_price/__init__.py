@@ -1,9 +1,12 @@
 """信息价综合 Deep Agent：查询、比价与趋势分析。"""
 
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from agent_app.deep_agents.harness import build_deep_agent
@@ -28,17 +31,20 @@ def create_info_price_agent(
     checkpointer: BaseCheckpointSaver,
     skill_root: Path,
     storage: ObjectStorage | None,
+    web_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
 ) -> DeepAgentRuntime:
     """创建信息价综合 agent 运行时。
 
-    主代理负责编排、取数与撰写报告，analyst 子代理分析出图；
-    对象存储未配置时 analyst 降级（无图表工具仍可工作，表格呈现）。
+    主代理负责编排、取数与撰写报告（可选注入搜索/阅读工具），
+    analyst 子代理分析出图；对象存储未配置时 analyst 降级
+    （无图表工具仍可工作，表格呈现）。
 
     参数:
         model: agent 使用的聊天模型（子代理继承）。
         checkpointer: 保存多轮会话状态的检查点存储。
         skill_root: 项目内 Deep Agent 技能根目录。
         storage: 对象存储；未配置时 analyst 无图表工具（降级表格）。
+        web_tools: 搜索/阅读工具（zhipu_web 未配置时为空）。
 
     返回值:
         绑定 info-price 技能与 analyst 子代理的受限 Deep Agent 运行时。
@@ -48,7 +54,7 @@ def create_info_price_agent(
         checkpointer=checkpointer,
         skill_root=skill_root,
         skill_sources=_SKILL_SOURCES,
-        tools=None,
+        tools=list(web_tools) if web_tools else None,
         system_prompt=INFO_PRICE_SYSTEM_PROMPT,
         subagents=build_info_price_subagents(
             chart_tools=create_chart_agent_tools(storage),

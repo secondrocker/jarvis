@@ -63,6 +63,39 @@ class McpConfig(BaseModel):
     token: SecretStr | None = None
 
 
+class ZhipuWebConfig(BaseModel):
+    """智谱 BigModel 工具 API（网络搜索 / 网页阅读）配置。
+
+    api_key 未配置时不注册对应 MCP 工具、不向 Deep Agent 注入
+    （与 image_gen 的装配哲学一致）。
+    """
+
+    # 开放平台服务地址（OpenAPI servers.url，一般无需修改）。
+    base_url: str = Field(default="https://open.bigmodel.cn/api", min_length=1)
+    api_key: SecretStr | None = None
+    # 默认搜索引擎：search_std / search_pro / search_pro_sogou / search_pro_quark。
+    search_engine: str = Field(default="search_std", min_length=1)
+    # 默认返回结果条数（1-50）。
+    search_count: int = Field(default=10, ge=1, le=50)
+    # 搜索内容量：medium（摘要）/ high（详细）。
+    content_size: str = Field(default="medium", min_length=1)
+    # 网页阅读返回格式（markdown / text）。
+    return_format: str = Field(default="markdown", min_length=1)
+    search_timeout_seconds: float = Field(default=15.0, gt=0)
+    fetch_timeout_seconds: float = Field(default=30.0, gt=0)
+
+    @field_validator("base_url")
+    @classmethod
+    def normalize_base_url(cls, value: str) -> str:
+        """去除首尾空白与尾斜杠。"""
+        return value.strip().rstrip("/") or "https://open.bigmodel.cn/api"
+
+    @property
+    def enabled(self) -> bool:
+        """api_key 已配置且非空白时视为启用。"""
+        return self.api_key is not None and bool(self.api_key.get_secret_value().strip())
+
+
 class ImageGenConfig(BaseModel):
     """Gemini 图像生成服务（gemini-web2api 反代）配置。
 
@@ -157,6 +190,7 @@ class Settings(BaseModel):
     log: LogConfig = Field(default_factory=LogConfig)
     s3: S3Config = Field(default_factory=S3Config)
     mcp: McpConfig = McpConfig()
+    zhipu_web: ZhipuWebConfig = Field(default_factory=ZhipuWebConfig)
     grade_homework: GradeHomeworkConfig = Field(default_factory=GradeHomeworkConfig)
     image_gen: ImageGenConfig = Field(default_factory=ImageGenConfig)
     image_vision: ImageVisionConfig = Field(default_factory=ImageVisionConfig)

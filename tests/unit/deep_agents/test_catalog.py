@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage
+from pydantic import SecretStr
 
 from agent_app.deep_agents import catalog as catalog_mod
 from agent_app.deep_agents import create_agents
@@ -41,7 +42,7 @@ def _patch_builders(monkeypatch, planning_runtime=None, info_price_runtime=None)
 
 
 def _settings(**overrides) -> SimpleNamespace:
-    from agent_app.config import S3Config
+    from agent_app.config import S3Config, ZhipuWebConfig
 
     openai_fields = {
         "solution_planning_model": None,
@@ -50,6 +51,7 @@ def _settings(**overrides) -> SimpleNamespace:
     }
     return SimpleNamespace(
         openai=SimpleNamespace(**openai_fields),
+        zhipu_web=ZhipuWebConfig(),
         s3=S3Config(),
     )
 
@@ -110,8 +112,8 @@ async def test_create_agents_registers_both_with_single_default(
     assert runtime.input_received == {"messages": [current_message]}
 
 
-def test_create_agents_passes_storage_to_info_price(monkeypatch, tmp_path) -> None:
-    """对象存储透传给 info_price（analyst 图表工具用）。"""
+def test_create_agents_passes_storage_and_web_tools(monkeypatch, tmp_path) -> None:
+    """对象存储与搜索/阅读工具透传给对应 agent。"""
     monkeypatch.setattr(
         catalog_mod, "create_chat_model", lambda settings, *, model_name=None: object()
     )
@@ -119,8 +121,28 @@ def test_create_agents_passes_storage_to_info_price(monkeypatch, tmp_path) -> No
 
     storage = object()
     monkeypatch.setattr(catalog_mod, "create_object_storage", lambda config: storage)
+    web_tools = [object(), object()]
+    monkeypatch.setattr(
+        catalog_mod, "create_web_agent_tools", lambda config: web_tools
+    )
+
+    settings = _settings()
+    settings.zhipu_web.api_key = SecretStr("sk-zhipu")  # type: ignore[attr-defined]
+    create_agents(settings=settings, checkpointer=object(), skill_root=tmp_path)
+
+    assert planning_calls[0]["tools"] is web_tools
+    assert info_price_calls[0]["storage"] is storage
+    assert info_price_calls[0]["web_tools"] is web_tools
+
+
+def test_create_agents_without_zhipu_key_omits_web_tools(monkeypatch, tmp_path) -> None:
+    """zhipu_web.api_key 未配置（空占位）时不注入搜索/阅读工具。"""
+    monkeypatch.setattr(
+        catalog_mod, "create_chat_model", lambda settings, *, model_name=None: object()
+    )
+    planning_calls, info_price_calls = _patch_builders(monkeypatch)
 
     create_agents(settings=_settings(), checkpointer=object(), skill_root=tmp_path)
 
-    assert "tools" not in planning_calls[0]
-    assert info_price_calls[0]["storage"] is storage
+    assert planning_calls[0]["tools"] is None
+    assert info_price_calls[0]["web_tools"] is None

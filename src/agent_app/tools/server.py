@@ -8,6 +8,7 @@ from agent_app.tools.image_tools import register_image_tools
 from agent_app.tools.image_vision_tools import register_image_vision_tools
 from agent_app.tools.pdf.tool import register_pdf_tools
 from agent_app.tools.storage_tools import register_storage_tools
+from agent_app.tools.web_search_tools import register_web_search_tools
 
 
 def build_mcp_server(
@@ -37,4 +38,6 @@ def build_mcp_server(
         )
     if settings.image_vision.base_url is not None:
         register_image_vision_tools(mcp, config=settings.image_vision, storage=resolved_storage)
+    if settings.zhipu_web.enabled:
+        register_web_search_tools(mcp, config=settings.zhipu_web)
     return mcp
