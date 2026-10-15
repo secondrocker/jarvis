@@ -22,16 +22,18 @@ mcp:
   enabled: true
   mount_path: /mcp
   token: 替换为你的-mcp-token（openssl rand -hex 32 生成，留空则不启用认证）
-# 智谱 BigModel 工具 API(网络搜索/网页阅读);api_key 未配置则不注册 web_search/web_fetch
+# 智谱 GLM Coding Plan 专属 MCP(联网搜索/网页阅读);
+# 走编程套餐额度,api_key 必须是套餐 Key(https://bigmodel.cn/coding-plan/personal/overview 获取);
+# 未配置则不注册 web_search/web_fetch
 zhipu_web:
-  base_url: https://open.bigmodel.cn/api
-  api_key: 替换为你的智谱-api-key（https://bigmodel.cn/usercenter/proj-mgmt/apikeys 获取）
-  search_engine: search_std      # search_std / search_pro / search_pro_sogou / search_pro_quark
-  search_count: 10
+  search_mcp_url: https://open.bigmodel.cn/api/mcp/web_search_prime/mcp
+  reader_mcp_url: https://open.bigmodel.cn/api/mcp/web_reader/mcp
+  api_key: 替换为你的-Coding-Plan-套餐-api-key
   content_size: medium           # medium 摘要 / high 详细
+  location: cn                   # cn 中文区域 / us 非中文区域
   return_format: markdown        # 网页阅读返回格式 markdown / text
-  search_timeout_seconds: 15
-  fetch_timeout_seconds: 30
+  search_timeout_seconds: 20
+  fetch_timeout_seconds: 40
 
 # Gemini 图像生成(gemini-web2api 反代);未配置则不注册 generate_image 工具
 image_gen:

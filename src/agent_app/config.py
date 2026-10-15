@@ -64,31 +64,44 @@ class McpConfig(BaseModel):
 
 
 class ZhipuWebConfig(BaseModel):
-    """智谱 BigModel 工具 API（网络搜索 / 网页阅读）配置。
+    """智谱 GLM Coding Plan 专属 MCP（联网搜索 / 网页读取）配置。
+
+    走 Coding Plan 的 Remote MCP Server（`/api/mcp/web_search_prime/mcp` 与
+    `/api/mcp/web_reader/mcp`），额度记在编程套餐上；开放平台的
+    `/paas/v4/web_search`、`/paas/v4/reader` 是另一套按量计费，未充值会报
+    1113「余额不足或无可用资源包」。
 
     api_key 未配置时不注册对应 MCP 工具、不向 Deep Agent 注入
     （与 image_gen 的装配哲学一致）。
     """
 
-    # 开放平台服务地址（OpenAPI servers.url，一般无需修改）。
-    base_url: str = Field(default="https://open.bigmodel.cn/api", min_length=1)
+    # 联网搜索 MCP Server（工具名 web_search_prime）。
+    search_mcp_url: str = Field(
+        default="https://open.bigmodel.cn/api/mcp/web_search_prime/mcp", min_length=1
+    )
+    # 网页读取 MCP Server（工具名 webReader）。
+    reader_mcp_url: str = Field(
+        default="https://open.bigmodel.cn/api/mcp/web_reader/mcp", min_length=1
+    )
+    # Coding Plan 套餐 Key（与开放平台普通 API Key 不通用）。
     api_key: SecretStr | None = None
-    # 默认搜索引擎：search_std / search_pro / search_pro_sogou / search_pro_quark。
-    search_engine: str = Field(default="search_std", min_length=1)
-    # 默认返回结果条数（1-50）。
-    search_count: int = Field(default=10, ge=1, le=50)
-    # 搜索内容量：medium（摘要）/ high（详细）。
+    # 搜索内容量：medium（400-600 字摘要）/ high（更全面，单价更高）。
     content_size: str = Field(default="medium", min_length=1)
+    # 搜索地域：cn（中文区域）/ us（非中文区域）。
+    location: str = Field(default="cn", min_length=1)
     # 网页阅读返回格式（markdown / text）。
     return_format: str = Field(default="markdown", min_length=1)
-    search_timeout_seconds: float = Field(default=15.0, gt=0)
-    fetch_timeout_seconds: float = Field(default=30.0, gt=0)
+    search_timeout_seconds: float = Field(default=20.0, gt=0)
+    fetch_timeout_seconds: float = Field(default=40.0, gt=0)
 
-    @field_validator("base_url")
+    @field_validator("search_mcp_url", "reader_mcp_url")
     @classmethod
-    def normalize_base_url(cls, value: str) -> str:
-        """去除首尾空白与尾斜杠。"""
-        return value.strip().rstrip("/") or "https://open.bigmodel.cn/api"
+    def normalize_mcp_url(cls, value: str) -> str:
+        """去除首尾空白；必须是 http(s) 端点。"""
+        stripped = value.strip()
+        if not stripped.startswith(("http://", "https://")):
+            raise ValueError("mcp url must be an http(s) endpoint")
+        return stripped
 
     @property
     def enabled(self) -> bool:
