@@ -10,35 +10,27 @@ from agent_app.deep_agents import info_price as info_price_mod
 from agent_app.deep_agents.info_price.subagents import build_info_price_subagents
 
 
-class _WebTool:
+class _ChartTool:
     """带名字的最小工具替身。"""
 
     def __init__(self, name: str) -> None:
         self.name = name
 
 
-def test_subagents_split_by_function_with_minimal_tools() -> None:
-    """子代理按职能划分：researcher 拿 web 工具，analyst 拿图表工具。"""
+def test_subagents_minimal_tools() -> None:
+    """子代理按职能划分：analyst 拿图表工具。"""
     subagents = build_info_price_subagents(
-        web_tools=[_WebTool("web_search"), _WebTool("web_fetch")],
-        chart_tools=[_WebTool("render_chart")],
+        chart_tools=[_ChartTool("render_chart")],
     )
-    assert [item["name"] for item in subagents] == ["researcher", "analyst"]
+    assert [item["name"] for item in subagents] == ["analyst"]
 
-    researcher, analyst = subagents
-    assert [tool.name for tool in researcher["tools"]] == ["web_search", "web_fetch"]
-    # researcher 挂载专属取数技能容器（站点清单在内层 research 技能）。
-    assert researcher["skills"] == ["/skills/info-price-research/"]
-    assert researcher["description"]
-    assert researcher["system_prompt"]
-
+    analyst = subagents[0]
     assert [tool.name for tool in analyst["tools"]] == ["render_chart"]
     assert "skills" not in analyst  # 无需站点知识
     assert analyst["description"]
     assert analyst["system_prompt"]
 
-    # 两个子代理均不指定 model（继承主代理）。
-    assert "model" not in researcher
+    # 子代理不指定 model（继承主代理）。
     assert "model" not in analyst
 
 
@@ -52,11 +44,8 @@ def test_create_info_price_agent_forwards_configuration(monkeypatch, tmp_path) -
 
     monkeypatch.setattr(info_price_mod, "build_deep_agent", fake_build_deep_agent)
 
-    web_client = object()
     storage = object()
-    web_tools = [_WebTool("web_search")]
-    chart_tools = [_WebTool("render_chart")]
-    monkeypatch.setattr(info_price_mod, "create_web_agent_tools", lambda client: web_tools)
+    chart_tools = [_ChartTool("render_chart")]
     monkeypatch.setattr(info_price_mod, "create_chart_agent_tools", lambda client: chart_tools)
 
     model = object()
@@ -65,7 +54,6 @@ def test_create_info_price_agent_forwards_configuration(monkeypatch, tmp_path) -
         model=model,
         checkpointer=checkpointer,
         skill_root=tmp_path,
-        web_client=web_client,
         storage=storage,
     )
     assert runtime is not None
@@ -76,19 +64,12 @@ def test_create_info_price_agent_forwards_configuration(monkeypatch, tmp_path) -
     assert call["skill_root"] == tmp_path
     assert call["skill_sources"] == [("/skills/info-price/", "Info Price")]
     assert "信息价" in call["system_prompt"]
-    assert [item["name"] for item in call["subagents"]] == ["researcher", "analyst"]
+    assert [item["name"] for item in call["subagents"]] == ["analyst"]
 
-    # 主图装配 task 限流中间件（防主代理无限派生子代理导致 web 渠道空转）。
+    # 主图装配 task 限流中间件（防主代理无限派生子代理空转）。
     assert isinstance(call["middleware"][0], ToolCallLimitMiddleware)
     assert call["middleware"][0].tool_name == "task"
     assert call["middleware"][0].run_limit == 2
-
-    # 主 agent 与 researcher 的技能源容器互不重叠（技能清单按角色隔离）。
-    main_paths = {path.rstrip("/") for path, _ in call["skill_sources"]}
-    researcher_paths = {p.rstrip("/") for p in call["subagents"][0]["skills"]}
-    assert main_paths.isdisjoint(researcher_paths)
-    # researcher prompt 含专属技能硬指针（防止技能路径漂移后取数流程失效）。
-    assert "/skills/info-price-research/research/SKILL.md" in call["subagents"][0]["system_prompt"]
 
 
 def test_skill_layout_loadable() -> None:
@@ -98,8 +79,7 @@ def test_skill_layout_loadable() -> None:
     SKILL.md 不会被注入），此测试防止容器化布局被破坏后技能静默失效。
     """
     skills_root = Path(agent_app.__file__).resolve().parent / "skills"
-    researcher = build_info_price_subagents()[0]
-    source_paths = [path for path, _ in info_price_mod._SKILL_SOURCES] + list(researcher["skills"])
+    source_paths = [path for path, _ in info_price_mod._SKILL_SOURCES]
 
     for source in source_paths:
         container = skills_root / source.removeprefix("/skills/").strip("/")

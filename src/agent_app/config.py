@@ -63,40 +63,6 @@ class McpConfig(BaseModel):
     token: SecretStr | None = None
 
 
-class WebGatewayConfig(BaseModel):
-    """外部 Web 网关（搜索/抓取）配置。"""
-
-    base_url: str | None = None
-    api_token: SecretStr | None = None
-    search_timeout_seconds: float = Field(default=15.0, gt=0)
-    fetch_timeout_seconds: float = Field(default=40.0, gt=0)
-    # web_search + web_fetch 在单次任务内的合计调用次数上限（全任务级，
-    # 跨所有子代理共享，见 tools/web_budget.py）。建议 5-8。
-    total_call_limit: int = Field(default=8, ge=1)
-
-    @field_validator("base_url")
-    @classmethod
-    def normalize_base_url(cls, value: str | None) -> str | None:
-        """去除首尾空白与尾斜杠；空白字符串视为未配置。"""
-        if value is None:
-            return None
-        stripped = value.strip().rstrip("/")
-        return stripped or None
-
-    @model_validator(mode="after")
-    def check_url_token_pair(self) -> "WebGatewayConfig":
-        """base_url 与 api_token 必须同时配置或同时缺省。
-
-        只配一半属于配置错误，应在校验阶段立即失败而非静默禁用，
-        与“拼写错误不被静默路由”的整体哲学一致。
-        """
-        if (self.base_url is None) != (self.api_token is None):
-            raise ValueError(
-                "web_gateway.base_url and web_gateway.api_token must be configured together"
-            )
-        return self
-
-
 class ImageGenConfig(BaseModel):
     """Gemini 图像生成服务（gemini-web2api 反代）配置。
 
@@ -190,8 +156,7 @@ class Settings(BaseModel):
     task: TaskConfig = Field(default_factory=TaskConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     s3: S3Config = Field(default_factory=S3Config)
-    mcp: McpConfig = Field(default_factory=McpConfig)
-    web_gateway: WebGatewayConfig = Field(default_factory=WebGatewayConfig)
+    mcp: McpConfig = McpConfig()
     grade_homework: GradeHomeworkConfig = Field(default_factory=GradeHomeworkConfig)
     image_gen: ImageGenConfig = Field(default_factory=ImageGenConfig)
     image_vision: ImageVisionConfig = Field(default_factory=ImageVisionConfig)

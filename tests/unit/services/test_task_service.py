@@ -253,35 +253,3 @@ async def test_stream_config_carries_thread_id_only(fake_success_graph) -> None:
     async for _event in service.stream(TaskRequest(message="x", thread_id="t-rec")):
         pass
     assert fake_success_graph.config_received == {"configurable": {"thread_id": "t-rec"}}
-
-
-@pytest.mark.asyncio
-async def test_stream_scopes_web_call_budget_to_task_lifetime() -> None:
-    """web 调用预算在任务执行期间可见，任务结束后恢复（不泄漏到下一个请求）。"""
-    from agent_app.tools.web_budget import current_web_call_budget
-
-    class _BudgetProbeGraph:
-        seen_during_run = None
-
-        async def astream(self, input, config, *, stream_mode):
-            _BudgetProbeGraph.seen_during_run = dict(current_web_call_budget() or {})
-            yield {
-                "selected_mode": "workflow",
-                "selected_executor_type": "summary",
-                "route_reason": "probe",
-                "result": {"summary": "s", "key_points": []},
-            }
-
-    probe = _BudgetProbeGraph()
-    service = TaskService(
-        graph=probe,
-        registry=_registry(),
-        task_timeout_seconds=5,
-        web_call_limit=7,
-    )
-    async for _event in service.stream(TaskRequest(message="x")):
-        pass
-
-    assert probe.seen_during_run == {"used": 0, "limit": 7}
-    # 流结束后预算上下文已恢复为未初始化。
-    assert current_web_call_budget() is None

@@ -10,10 +10,8 @@ from agent_app.deep_agents.info_price import create_info_price_agent
 from agent_app.deep_agents.solution_planning import create_solution_planning_agent
 from agent_app.infrastructure.llm import create_chat_model
 from agent_app.infrastructure.storage import create_object_storage
-from agent_app.infrastructure.web_gateway import create_web_gateway
 from agent_app.orchestration.executors import ExecutorDefinition
 from agent_app.schemas.tasks import SelectedMode
-from agent_app.tools.web_tools import create_web_agent_tools
 
 
 def create_agents(
@@ -23,10 +21,7 @@ def create_agents(
     skill_root: Path,
 ) -> dict[str, ExecutorDefinition]:
     """创建全部 Deep Agent 及其路由元数据。"""
-    web_client = create_web_gateway(settings.web_gateway)
     storage = create_object_storage(settings.s3)
-    # web 工具调用由全任务级 web_budget 限流（TaskService 在任务边界
-    # set/reset，跨所有子代理共享），不依赖逐图中间件。
     planning = create_solution_planning_agent(
         model=create_chat_model(
             settings,
@@ -34,7 +29,6 @@ def create_agents(
         ),
         checkpointer=checkpointer,
         skill_root=skill_root,
-        tools=create_web_agent_tools(web_client) if web_client else None,
     )
     info_price = create_info_price_agent(
         model=create_chat_model(
@@ -43,7 +37,6 @@ def create_agents(
         ),
         checkpointer=checkpointer,
         skill_root=skill_root,
-        web_client=web_client,
         storage=storage,
     )
     return {

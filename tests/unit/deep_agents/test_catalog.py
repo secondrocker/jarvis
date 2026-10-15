@@ -50,7 +50,6 @@ def _settings(**overrides) -> SimpleNamespace:
     }
     return SimpleNamespace(
         openai=SimpleNamespace(**openai_fields),
-        web_gateway=None,
         s3=S3Config(),
     )
 
@@ -111,44 +110,17 @@ async def test_create_agents_registers_both_with_single_default(
     assert runtime.input_received == {"messages": [current_message]}
 
 
-def test_create_agents_without_gateway_omits_web_tools(monkeypatch, tmp_path) -> None:
-    """web_gateway 未配置时，solution_planning 不注入工具，info_price 仍可构建。"""
+def test_create_agents_passes_storage_to_info_price(monkeypatch, tmp_path) -> None:
+    """对象存储透传给 info_price（analyst 图表工具用）。"""
     monkeypatch.setattr(
         catalog_mod, "create_chat_model", lambda settings, *, model_name=None: object()
     )
     planning_calls, info_price_calls = _patch_builders(monkeypatch)
+
+    storage = object()
+    monkeypatch.setattr(catalog_mod, "create_object_storage", lambda config: storage)
 
     create_agents(settings=_settings(), checkpointer=object(), skill_root=tmp_path)
 
-    assert planning_calls[0]["tools"] is None
-    assert info_price_calls[0]["web_client"] is None
-
-
-def test_create_agents_passes_gateway_and_storage_to_info_price(monkeypatch, tmp_path) -> None:
-    """配置了 web_gateway 时工具注入 planning，网关与存储透传给 info_price。"""
-    monkeypatch.setattr(
-        catalog_mod, "create_chat_model", lambda settings, *, model_name=None: object()
-    )
-    planning_calls, info_price_calls = _patch_builders(monkeypatch)
-
-    web_client = object()
-    storage = object()
-    monkeypatch.setattr(catalog_mod, "create_web_gateway", lambda config: web_client)
-    monkeypatch.setattr(catalog_mod, "create_object_storage", lambda config: storage)
-
-    from agent_app.config import S3Config, WebGatewayConfig
-
-    settings = SimpleNamespace(
-        openai=SimpleNamespace(solution_planning_model=None, info_price_model=None),
-        web_gateway=WebGatewayConfig(
-            base_url="https://surf.leegoo.ltd",
-            api_token="gateway-token",
-        ),
-        s3=S3Config(),
-    )
-    create_agents(settings=settings, checkpointer=object(), skill_root=tmp_path)
-
-    tools = planning_calls[0]["tools"]
-    assert {tool.name for tool in tools} == {"web_search", "web_fetch"}
-    assert info_price_calls[0]["web_client"] is web_client
+    assert "tools" not in planning_calls[0]
     assert info_price_calls[0]["storage"] is storage
