@@ -107,8 +107,9 @@ class ImageGenConfig(BaseModel):
     base_url: str | None = None
     api_key: SecretStr | None = None
     model: str = Field(default="gemini-image", min_length=1)
-    # gpt-6-luna 生图走的模型名（在 image_vision 网关上请求时使用）。
-    luna_model: str = Field(default="gpt-6-luna", min_length=1)
+    # gpt-6-luna 生图在 image_vision 网关 /v1/images/generations 请求的
+    # 模型名（codex-proxy 会转为 image_generation 工具，上游强制 gpt-image-2）。
+    luna_image_model: str = Field(default="gpt-image-2", min_length=1)
     # gemini 生图失败时是否自动降级到 gpt-6-luna（需 image_vision 已配置）。
     luna_fallback: bool = True
     timeout_seconds: float = Field(default=180.0, gt=0)

@@ -7,7 +7,6 @@
 错误处理范式与 storage_tools.py 一致：AppError 转为 ToolError，不抛裸异常。
 """
 
-import json
 import re
 from datetime import UTC, datetime
 from io import BytesIO
@@ -297,143 +296,90 @@ def _safety_refusal_error() -> AppError:
     return AppError(ErrorCode.UPSTREAM_UNAVAILABLE, _SAFETY_REFUSAL_MESSAGE)
 
 
-def _stream_chat_completion(
-    vision: ImageVisionConfig,
-    payload: dict[str, Any],
-    headers: dict[str, str],
-) -> tuple[dict[str, Any], str | None]:
-    """以 SSE 流式调用 chat completions 并聚合为非流式等价的消息结构。
-
-    流式模式下 tool_calls 的 function.arguments 按分片到达，需按 index
-    累积后整体解析；content/refusal 同理累积拼接。
-
-    参数:
-        vision: image_vision 网关配置。
-        payload: 已含 stream=True 的请求体。
-        headers: 认证等请求头。
-
-    返回值:
-        (聚合后的 message 字典, finish_reason)；finish_reason 可能缺失为 None。
-    """
-    content_parts: list[str] = []
-    refusal_parts: list[str] = []
-    tools: dict[int, dict[str, Any]] = {}
-    finish_reason: str | None = None
-    with httpx.stream(
-        "POST",
-        f"{vision.base_url}/v1/chat/completions",  # type: ignore[operator]
-        json=payload,
-        headers=headers,
-        timeout=vision.timeout_seconds,
-    ) as response:
-        response.raise_for_status()
-        for line in response.iter_lines():
-            line = line.strip()
-            if not line.startswith("data: "):
-                continue
-            data = line[len("data: ") :]
-            if data == "[DONE]":
-                break
-            try:
-                chunk = json.loads(data)
-            except ValueError:
-                continue
-            choice = (chunk.get("choices") or [None])[0]
-            if not choice:
-                continue
-            finish_reason = choice.get("finish_reason") or finish_reason
-            delta = choice.get("delta") or {}
-            if delta.get("content"):
-                content_parts.append(str(delta["content"]))
-            if delta.get("refusal"):
-                refusal_parts.append(str(delta["refusal"]))
-            for call in delta.get("tool_calls") or []:
-                index = call.get("index") or 0
-                slot = tools.setdefault(index, {"name": None, "arguments": ""})
-                function = call.get("function") or {}
-                if function.get("name"):
-                    slot["name"] = function["name"]
-                slot["arguments"] += function.get("arguments") or ""
-    message: dict[str, Any] = {
-        "content": "".join(content_parts),
-        "refusal": "".join(refusal_parts) or None,
-        "tool_calls": [{"function": slot} for _, slot in sorted(tools.items())],
-    }
-    return message, finish_reason
-
-
 def _request_luna_generation(
     vision: ImageVisionConfig,
     model: str,
     prompt: str,
-) -> list[dict[str, Any]]:
-    """调用 image_vision 网关上的 gpt-6-luna 生成图片，返回图片来源列表。
+) -> tuple[list[dict[str, Any]], str | None]:
+    """经 image_vision 网关的 OpenAI Images 兼容端点生成图片。
 
-    gpt-6-luna 通过 OpenAI 的 image_generation 工具生图：请求需携带
-    tools=[{"type": "image_generation"}]，图片以 tool_calls 里
-    image_generation(result=<base64>) 的形式返回，正文则是文字说明。
+    codex-proxy 提供 POST /v1/images/generations：代理把请求转成 Codex
+    Responses 的 image_generation 工具调用（上游实际生图模型固定为
+    gpt-image-2），返回 {data: [{b64_json, revised_prompt}]}。相比
+    chat completions + tool_calls 路径，该端点是文档保证的稳定图像
+    payload 通道。
 
     参数:
         vision: image_vision 网关配置（base_url/api_key 必须已配置）。
-        model: 网关上请求的模型名（默认 gpt-6-luna）。
+        model: 请求体携带的模型名（默认 gpt-image-2，上游会强制改写）。
         prompt: 已并入比例要求的完整提示词。
 
     返回值:
-        图片来源列表（data/extension/content_type），与
-        _extract_image_sources 的 data 项同构；无图片时为空列表。
+        (图片来源列表, revised_prompt)：来源项含 data/extension/
+        content_type；revised_prompt 为模型实际使用的提示词，可能为 None。
+        列表为空表示未生成图片。
 
     异常:
-        AppError: 请求失败或响应结构异常时抛出 UPSTREAM_UNAVAILABLE。
+        AppError: 上游内容政策拒绝时抛安全拒绝错误；请求失败或响应
+        结构异常时抛 UPSTREAM_UNAVAILABLE。
     """
     import base64
     import binascii
 
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "tools": [{"type": "image_generation"}],
-        # 必须流式：网关对非流式请求有约 60 秒整体超时，复杂 prompt 生图
-        # 超过该阈值会稳定 504；流式分块保持连接活跃可绕过（实测 95s 成功）。
-        "stream": True,
-    }
+    payload = {"model": model, "prompt": prompt, "output_format": "png"}
     headers = {
         "Authorization": f"Bearer {vision.api_key.get_secret_value()}",  # type: ignore[union-attr]
         "Content-Type": "application/json",
     }
     try:
-        message, finish_reason = _stream_chat_completion(vision, payload, headers)
-    except (httpx.HTTPError, ValueError) as error:
+        response = httpx.post(
+            f"{vision.base_url}/v1/images/generations",  # type: ignore[operator]
+            json=payload,
+            headers=headers,
+            timeout=vision.timeout_seconds,
+        )
+    except httpx.HTTPError as error:
         raise AppError(
             ErrorCode.UPSTREAM_UNAVAILABLE,
             "Image generation service is temporarily unavailable",
         ) from error
-    if message.get("refusal") or finish_reason == "content_filter":
-        raise _safety_refusal_error()
+    if response.status_code >= 400:
+        # 错误体为 {error: {message}}（OpenAI 格式）；内容政策拒绝常含
+        # 拒绝性话术，识别后抛安全拒绝错误（不触发降级重试）。
+        detail = ""
+        try:
+            detail = str(response.json().get("error", {}).get("message", ""))
+        except ValueError:
+            pass
+        if _looks_like_refusal(detail):
+            raise _safety_refusal_error()
+        raise AppError(
+            ErrorCode.UPSTREAM_UNAVAILABLE,
+            "Image generation service is temporarily unavailable",
+        )
+    try:
+        body = response.json()
+        items = body["data"] or []
+    except (ValueError, KeyError, TypeError) as error:
+        raise AppError(
+            ErrorCode.UPSTREAM_UNAVAILABLE,
+            "Image generation service returned an unexpected response",
+        ) from error
     sources: list[dict[str, Any]] = []
-    for call in message.get("tool_calls") or []:
-        function = call.get("function") or {}
-        if function.get("name") != "image_generation":
+    revised_prompt: str | None = None
+    for item in items:
+        revised_prompt = revised_prompt or item.get("revised_prompt")
+        encoded = item.get("b64_json")
+        if not isinstance(encoded, str) or not encoded.strip():
             continue
         try:
-            arguments = json.loads(function.get("arguments") or "{}")
-            result = arguments.get("result")
-            if not isinstance(result, str) or not result.strip():
-                continue
-            data = base64.b64decode(re.sub(r"\s+", "", result), validate=True)
-        except (ValueError, TypeError, AttributeError, binascii.Error):
+            data = base64.b64decode(re.sub(r"\s+", "", encoded), validate=True)
+        except (ValueError, binascii.Error):
             continue
         sniffed = _validated_image(data)
         if sniffed:
             sources.append({"data": data, "extension": sniffed[0], "content_type": sniffed[1]})
-    # 兜底：个别网关可能直接把图片内嵌在正文中返回。
-    content = message.get("content")
-    if not sources and isinstance(content, str):
-        sources = _extract_image_sources(content)
-    # 仍未取得图片且正文是拒绝性话术时，视为被上游内容政策拒绝，
-    # 抛出明确的安全拒绝错误（区别于笼统的"未生成图片"）。
-    if not sources and isinstance(content, str) and _looks_like_refusal(content):
-        raise _safety_refusal_error()
-    return sources
+    return sources, revised_prompt
 
 
 def _validated_image(data: bytes) -> tuple[str, str] | None:
@@ -480,7 +426,8 @@ def register_image_tools(
         prompt 为图片内容描述（支持中英文）；aspect_ratio 可选，取值
         1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 9:16 / 16:9 / 21:9，缺省由模型自选。
         model 可选，取值 gpt-6-luna（默认，经 image_vision 网关的
-        image_generation 工具）或 gemini（gemini-web2api 反代）。
+        /v1/images/generations 端点，上游实际生图模型为 gpt-image-2）
+        或 gemini（gemini-web2api 反代）。
         显式选择 gemini 失败时自动降级重试 gpt-6-luna（返回值 fallback=true）。
         生成图片按内容自动归类到 images/<category>/<日期>/<id>.<ext>；
         path 可选，为自定义存储路径（含文件名，如 "assets/poster.png"），
@@ -509,13 +456,16 @@ def register_image_tools(
         full_prompt = _compose_prompt(params.prompt, params.aspect_ratio)
         try:
             fallback_used = False
+            revised_prompt: str | None = None
             if params.model == "gpt-6-luna":
                 if vision_config is None or vision_config.base_url is None:
                     raise AppError(
                         ErrorCode.UPSTREAM_UNAVAILABLE,
                         "gpt-6-luna image generation is not configured",
                     )
-                sources = _request_luna_generation(vision_config, config.luna_model, full_prompt)
+                sources, revised_prompt = _request_luna_generation(
+                    vision_config, config.luna_image_model, full_prompt
+                )
                 used_model = "gpt-6-luna"
             else:
                 try:
@@ -540,8 +490,8 @@ def register_image_tools(
                         raise
                     if vision_config.base_url is None:
                         raise
-                    sources = _request_luna_generation(
-                        vision_config, config.luna_model, full_prompt
+                    sources, revised_prompt = _request_luna_generation(
+                        vision_config, config.luna_image_model, full_prompt
                     )
                     used_model = "gpt-6-luna"
                     fallback_used = True
@@ -584,9 +534,11 @@ def register_image_tools(
                 "prompt": params.prompt,
                 "aspect_ratio": params.aspect_ratio,
                 "path": params.path,
-                # model 返回实际生成模型（降级时与请求模型不同），fallback 标记是否降级。
+                # model 返回实际生成模型（降级时与请求模型不同），fallback 标记是否降级；
+                # revised_prompt 为 luna(gpt-image-2) 实际使用的优化后提示词，可能为 None。
                 "model": used_model,
                 "fallback": fallback_used,
+                "revised_prompt": revised_prompt,
                 "images": images,
             }
         except AppError as error:

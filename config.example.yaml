@@ -33,8 +33,9 @@ image_gen:
   base_url: https://gemini.leegoo.ltd
   api_key: sk-gemini-替换为你的-key
   model: gemini-image
-  # gpt-6-luna 生图在 image_vision 网关上请求的模型名(model=gpt-6-luna 或降级时使用)
-  luna_model: gpt-6-luna
+  # gpt-6-luna 生图在 image_vision 网关 /v1/images/generations 请求的模型名
+  # (上游 codex-proxy 固定改写为 gpt-image-2)
+  luna_image_model: gpt-image-2
   # gemini 生图失败时是否自动降级到 gpt-6-luna(需 image_vision 已配置)
   luna_fallback: true
   timeout_seconds: 180
