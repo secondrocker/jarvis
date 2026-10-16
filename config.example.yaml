@@ -18,6 +18,8 @@ s3:
   access_key: 替换为你的-access-key
   secret_key: 替换为你的-secret-key
   url_expires_seconds: 604800
+  # 桶对匿名读开放时置 true:download_url 返回 {public_domain}/{bucket}/{key} 无签名链接
+  public_read: false
 mcp:
   enabled: true
   mount_path: /mcp

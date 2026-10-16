@@ -160,6 +160,57 @@ def test_factory_signs_at_public_endpoint_with_sigv4(monkeypatch, public_domain)
     assert calls[-1][2].url_calls
 
 
+def test_public_read_download_url_is_unsigned_and_encoded() -> None:
+    """public_read 模式：download_url 返回无签名公开链接，中文 key 百分号编码。"""
+    client = _FakeBotoClient()
+    storage = Boto3Storage(
+        client=client,
+        bucket="beauty",
+        expires_in=300,
+        public_read=True,
+        public_base="https://s3.public.test/beauty",
+    )
+    url = storage.download_url("图片/人物/白丝/示例-白丝-高挑.png")
+    assert url == (
+        "https://s3.public.test/beauty/"
+        "%E5%9B%BE%E7%89%87/%E4%BA%BA%E7%89%A9/%E7%99%BD%E4%B8%9D/"
+        "%E7%A4%BA%E4%BE%8B-%E7%99%BD%E4%B8%9D-%E9%AB%98%E6%8C%91.png"
+    )
+    assert "X-Amz" not in url
+    # GET 不再走签名 client（上传仍预签名）。
+    assert not client.url_calls or client.url_calls[0]["operation"] == "put_object"
+
+
+def test_public_read_upload_url_stays_presigned() -> None:
+    """公开读只影响下载链接：上传仍返回预签名 PUT（桶写入未公开）。"""
+    client = _FakeBotoClient(presigned="https://signed.test/put")
+    storage = Boto3Storage(
+        client=client,
+        bucket="beauty",
+        expires_in=300,
+        public_read=True,
+        public_base="https://s3.public.test/beauty",
+    )
+    assert storage.upload_url("k.png", content_type="image/png") == "https://signed.test/put"
+    assert client.url_calls[0]["operation"] == "put_object"
+
+
+def test_factory_public_read_without_public_domain_falls_back_to_presigned(monkeypatch) -> None:
+    """public_read 但未配置 public_domain 时回退预签名（无公开端点可拼）。"""
+    from agent_app.config import S3Config
+    from agent_app.infrastructure.storage import create_object_storage
+
+    class FakeSession:
+        def client(self, service, **options):
+            return _FakeBotoClient(presigned="https://signed.test/x")
+
+    monkeypatch.setattr("agent_app.infrastructure.storage.boto3.session.Session", FakeSession)
+    storage = create_object_storage(
+        S3Config(endpoint_url="http://internal.test:9000", public_read=True)
+    )
+    assert storage.download_url("k") == "https://signed.test/x"
+
+
 def test_list_returns_entries_with_metadata() -> None:
     """list 返回含 size 与 last_modified 的 ObjectEntry（自动翻页）。"""
     from datetime import UTC, datetime

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from urllib.parse import quote
 
 import boto3
 from botocore.config import Config
@@ -75,12 +76,19 @@ class Boto3Storage:
         bucket: str | None,
         expires_in: int,
         signing_client: Any | None = None,
+        public_read: bool = False,
+        public_base: str | None = None,
     ) -> None:
-        """绑定内部操作 client 与公开端点签名 client，签名后不再修改 URL。"""
+        """绑定内部操作 client 与公开端点签名 client，签名后不再修改 URL。
+
+        public_read 且提供 public_base 时，download_url 直接返回无签名
+        公开链接（公开读桶），签名 client 仅用于 upload_url 的预签名 PUT。
+        """
         self._client = client
         self._signing_client = signing_client if signing_client is not None else client
         self._bucket = bucket
         self._expires_in = expires_in
+        self._public_base = public_base.rstrip("/") if (public_read and public_base) else None
 
     def put(self, data: bytes, *, key: str, content_type: str) -> None:
         """上传字节到 ``bucket/key``，失败映射为安全的 ``UPSTREAM_UNAVAILABLE``。
@@ -104,14 +112,20 @@ class Boto3Storage:
             ) from error
 
     def download_url(self, key: str) -> str:
-        """生成 ``bucket/key`` 的预签名 GET URL。
+        """生成 ``bucket/key`` 的下载 URL。
+
+        public_read 模式下返回 ``{public_base}/{key}`` 的无签名公开链接
+        （key 按 RFC 3986 百分号编码，支持中文路径）；否则返回带签名、
+        可在 ``expires_in`` 内下载的预签名 URL。
 
         参数:
             key: 对象 key。
 
         返回值:
-            带签名、可在 ``expires_in`` 内下载的 URL（直接按访问端点签名）。
+            可直接 GET 下载的 URL。
         """
+        if self._public_base is not None:
+            return f"{self._public_base}/{quote(key, safe='/')}"
         try:
             url = self._signing_client.generate_presigned_url(
                 "get_object",
@@ -249,17 +263,23 @@ def create_object_storage(s3: S3Config) -> ObjectStorage:
     }
     client = session.client("s3", endpoint_url=s3.endpoint_url, **options)
     signing_client = client
+    public_base: str | None = None
     if s3.public_domain:
         # 公开域名本身是签名端点，协议和 Host 都必须在签名前确定。
         endpoint = s3.public_domain.rstrip("/")
         if "://" not in endpoint:
             endpoint = f"https://{endpoint}"
         signing_client = session.client("s3", endpoint_url=endpoint, **options)
+        if s3.public_read and s3.bucket:
+            # 公开读桶：下载链接直接拼 {公开域名}/{bucket}/{key}，无签名。
+            public_base = f"{endpoint}/{s3.bucket}"
     return Boto3Storage(
         client=client,
         signing_client=signing_client,
         bucket=s3.bucket,
         expires_in=s3.url_expires_seconds,
+        public_read=s3.public_read,
+        public_base=public_base,
     )
 
 

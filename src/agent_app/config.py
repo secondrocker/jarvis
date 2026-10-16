@@ -51,6 +51,11 @@ class S3Config(BaseModel):
     public_domain: str | None = Field(
         default=None, description="公开访问端点，在此端点直接签名；不带协议时默认 HTTPS"
     )
+    # 桶对匿名读开放（public-read bucket policy）时置 true：download_url
+    # 直接返回 {public_domain}/{bucket}/{key} 的无签名 URL——签名参数
+    # （X-Amz-Signature 等）会被部分调用方（如 openclaw）当密钥脱敏导致
+    # 链接失效，公开读下无签名链接无此问题。上传仍走预签名 PUT。
+    public_read: bool = Field(default=False)
 
 
 class McpConfig(BaseModel):
