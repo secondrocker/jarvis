@@ -381,7 +381,7 @@ async def test_generate_image_with_luna_model(mcp_server, fake_storage, monkeypa
     assert body["url"] == "https://codex.test/v1/responses"
     assert body["json"]["model"] == "gpt-6-luna"
     assert body["json"]["stream"] is True
-    assert body["json"]["tools"] == [{"type": "image_generation"}]
+    assert body["json"]["tools"] == [{"type": "image_generation", "moderation": "low"}]
     assert body["json"]["input"][0]["content"][0]["text"] == "画一只猫"
     assert body["headers"]["Authorization"] == "Bearer sk-vision"
 
@@ -444,7 +444,7 @@ async def test_generate_image_falls_back_to_luna(mcp_server, fake_storage, monke
     # 先打 gemini 反代（非流式），失败后再打 luna 网关的 responses 流式端点。
     assert "gemini.test" in post_calls[0]["url"]
     assert stream_calls[0]["url"] == "https://codex.test/v1/responses"
-    assert stream_calls[0]["json"]["tools"] == [{"type": "image_generation"}]
+    assert stream_calls[0]["json"]["tools"] == [{"type": "image_generation", "moderation": "low"}]
 
 
 @pytest.mark.asyncio

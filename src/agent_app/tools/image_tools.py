@@ -308,7 +308,8 @@ def _request_luna_generation(
     codex-proxy 的非流式端点（images/generations、chat completions）受
     网关约 60 秒整体超时约束，复杂 prompt 生图常超时 504；/v1/responses
     流式分块保持连接活跃可绕过该限制（文档标注的稳定图像 payload 通道）。
-    生图通过 tools=[{"type":"image_generation"}] 触发，图片在
+    生图通过 tools=[{"type":"image_generation","moderation":"low"}] 触发
+    （moderation=low 放宽图像端审核，减少误拒），图片在
     response.output_item.done 事件的 image_generation_call.result 中
     以 base64 返回（上游实际生图模型固定为 gpt-image-2）。
 
@@ -343,7 +344,9 @@ def _request_luna_generation(
                 "content": [{"type": "input_text", "text": prompt}],
             }
         ],
-        "tools": [{"type": "image_generation"}],
+        # moderation=low：放宽上游图像端审核，降低非露骨成人时尚/人像
+        # prompt 被误判为违规而遭到拒绝的概率（网关文档支持的字段）。
+        "tools": [{"type": "image_generation", "moderation": "low"}],
     }
     headers = {
         "Authorization": f"Bearer {vision.api_key.get_secret_value()}",  # type: ignore[union-attr]
