@@ -62,8 +62,8 @@ def create_grade_upload_router(settings: Settings) -> APIRouter:
         "/upload", response_model=UploadResponse, summary="上传作业图片,返回可下载 URL"
     )
     async def upload_image(
-        file: UploadFile = File(...),
-        _: dict = Depends(require_auth),
+        file: Annotated[UploadFile, File(...)],
+        _: Annotated[dict, Depends(require_auth)],
     ) -> UploadResponse:
         raw = await file.read()
         if len(raw) > max_mb * 1024 * 1024:
@@ -74,7 +74,7 @@ def create_grade_upload_router(settings: Settings) -> APIRouter:
         except Exception as error:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"无法解析图片: {error}") from error
         key = f"homework/{uuid.uuid4().hex}.jpg"
-        # 原样存储;兜底压缩在 workflow fetch_image 节点完成
+        # 原样存储;兜底压缩在批改 agent 执行器的图片注入阶段完成
         storage.put(raw, key=key, content_type=file.content_type or "image/jpeg")
         return UploadResponse(url=storage.download_url(key), key=key)
 

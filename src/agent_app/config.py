@@ -189,10 +189,12 @@ class ImageVisionConfig(BaseModel):
 
 
 class GradeHomeworkConfig(BaseModel):
-    """批改作业工作流的图片限制配置。"""
+    """批改作业 agent 的图片限制配置。"""
 
     max_image_mb: int = Field(default=8, ge=1)
     max_image_edge: int = Field(default=2048, ge=256)
+    # 单次提交允许的最大图片数（跨页作业一次提交多图）。
+    max_pages: int = Field(default=4, ge=1, le=8)
 
 
 class AuthConfig(BaseModel):

@@ -32,8 +32,8 @@ workflow 与 Deep Agent 通过统一执行器协议注册到 `ExecutorRegistry`�
 **路由优先级**（从高到低）：
 
 1. 显式指定 `execution_mode` 及目标；workflow 必须提供 `task_type`，Deep Agent 可省略 `agent_type` 并使用默认项
-2. AUTO 请求中包含已注册的 `task_type` 或 `agent_type`
-3. 确定性关键词规则（例如“总结”→ 摘要工作流）
+2. AUTO 请求中包含已注册的 `task_type` 或 `agent_type`（历史 `task_type` 若已改造为 Deep Agent，如 `grade_homework`，则按同名 agent 路由，旧调用方不受影响）
+3. 确定性关键词规则（例如"总结"→ 摘要工作流）
 4. LLM 根据注册表提供的名称、模式和能力描述辅助分类
 5. 意图模糊或模型选择无效 → 安全回退到默认 `solution_planning` agent
 
@@ -97,6 +97,11 @@ curl -s localhost:8000/api/v1/tasks/invoke \
   -H 'Content-Type: application/json' \
   -d '{"message":"https://example.com/sample.pdf","execution_mode":"workflow","task_type":"pdf_to_image"}' | jq .
 
+# 批改作业：message 为一个或多个作业图片 URL（跨页作业多图一次提交）
+curl -s localhost:8000/api/v1/tasks/invoke \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"https://example.com/hw-1.jpg https://example.com/hw-2.jpg","task_type":"grade_homework"}' | jq .
+
 # 显式使用工作流并保持会话连续性
 curl -s localhost:8000/api/v1/tasks/invoke \
   -H 'Content-Type: application/json' \
@@ -159,6 +164,7 @@ src/agent_app/
 │   └── sse.py            SSE 文本格式化
 ├── config.py             从 config.yaml 读取的层级配置（pydantic 模型）
 ├── deep_agents/          Deep Agent 目录、受限适配器、工厂、事件映射器
+│   └── grade_homework/   作业批改 agent（executor/工具/子代理/契约后处理）
 ├── errors.py             AppError、ErrorCode、HTTP 状态映射
 ├── infrastructure/       检查点存储、LLM 工厂、对象存储（S3）封装
 ├── logging.py            structlog 配置
@@ -166,14 +172,28 @@ src/agent_app/
 ├── orchestration/        顶层 LangGraph 图、统一执行器协议、路由器、注册表、状态
 ├── schemas/              任务/事件/工具传输模型、EventSequencer
 ├── services/             TaskService（统一事件源）
-├── skills/               Deep Agent 技能定义（solution_planning）
+├── skills/               Deep Agent 技能定义（solution-planning、info-price、grade-homework）
 ├── tools/                进程内工具实现 + 聚合 MCP 服务（PDF 转图片、对象存储）
 └── workflows/            workflow 统一适配器与固定子图（summary、pdf_to_image）
 ```
+
+### 作业批改 agent（grade_homework）
+
+原 `grade_homework` 固定工作流（fetch_image → grade_llm → calc_verify）已改造为 Deep Agent，
+路由名与 `result` 契约（subject / questions / accuracy 等字段）保持不变，新增 `diagnosis`、
+`feedback`、`needs_human_review`、`review_reasons` 等字段（对旧客户端为增量兼容）：
+
+- **感知层（确定性代码）**：`GradeHomeworkExecutor` 下载作业图片（SSRF 校验 + 兜底压缩），
+  以多模态消息注入当前用户消息；多轮追问时复用会话历史中的图片。
+- **判断层（agent）**：主代理（视觉模型）按 `skills/grade-homework/` 下的技能逐题批改，
+  数学题用 `verify_expressions` 工具精确复算，提交前用 `check_grading_result` 校验契约；
+  有错题时派发 `error_analyst`（错因与学情）与 `feedback_writer`（学生评语）两个文本子代理。
+- **校验层（确定性代码）**：返回前由服务端重算统计、复算数学题并裁定人工复核标记
+  （对齐"AI 只出预批、教师确认后生效"的要求），agent 给出的数字不直接决定对外结果。
 
 ## 限制
 
 - **仅使用内存存储**：检查点存储（`MemorySaver`）和 Deep Agent 后端（`StateBackend`）均为进程内实例。进程重启后所有状态都会丢失。
 - **没有身份认证**：接口完全开放，请勿在缺少网关保护的情况下部署。
-- **当前执行器**：提供 `summary`、`pdf_to_image` 两个 workflow 与默认 `solution_planning` Deep Agent；新增执行器时在所属包的创建函数中登记即可。
-- **Deep Agent 限制**：不能执行 Shell 命令，也不能调度子代理。
+- **当前执行器**：提供 `summary`、`pdf_to_image` 两个 workflow 与 `solution_planning`（默认）、`info_price`、`grade_homework` 三个 Deep Agent；新增执行器时在所属包的创建函数中登记即可。
+- **Deep Agent 限制**：不能执行 Shell 命令；仅显式声明 `subagents=` 的 agent（`info_price`、`grade_homework`）可调度子代理。

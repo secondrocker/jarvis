@@ -47,6 +47,9 @@ class TaskService:
     def preflight(self, request: TaskRequest) -> None:
         """拒绝请求中显式填写但尚未注册的 workflow 或 agent 目标。
 
+        历史 ``task_type`` 已改造为 Deep Agent 的执行器（如 grade_homework）
+        按同名 Deep Agent 接受，保证旧调用方不被 422 打断；拼写错误依旧拒绝。
+
         参数:
             request: 即将执行的任务请求。
 
@@ -54,7 +57,11 @@ class TaskService:
             AppError: task_type 或 agent_type 未注册时抛出。
         """
         if request.task_type and request.task_type.strip():
-            self._registry.get(request.task_type, mode=SelectedMode.WORKFLOW)
+            if not (
+                self._registry.contains(request.task_type, mode=SelectedMode.WORKFLOW)
+                or self._registry.contains(request.task_type, mode=SelectedMode.DEEP_AGENT)
+            ):
+                self._registry.get(request.task_type, mode=SelectedMode.WORKFLOW)
         if request.agent_type and request.agent_type.strip():
             self._registry.get(request.agent_type, mode=SelectedMode.DEEP_AGENT)
 
@@ -136,9 +143,7 @@ class TaskService:
         result = final_values.get("result") or {}
         selected_mode = final_values.get("selected_mode") or SelectedMode.DEEP_AGENT.value
         selected_executor_type = final_values.get("selected_executor_type")
-        task_type = (
-            selected_executor_type if selected_mode == SelectedMode.WORKFLOW.value else None
-        )
+        task_type = selected_executor_type if selected_mode == SelectedMode.WORKFLOW.value else None
         agent_type = (
             selected_executor_type if selected_mode == SelectedMode.DEEP_AGENT.value else None
         )

@@ -54,7 +54,7 @@ uv run ruff check . --fix
 ### 路由优先级（`orchestration/router.py`，从高到低）
 
 1. 显式 `execution_mode`（`workflow` 必须带 `task_type`；`deep_agent` 可省略 `agent_type` 走默认）
-2. AUTO 请求中含已注册的 `task_type` / `agent_type`
+2. AUTO 请求中含已注册的 `task_type` / `agent_type`（历史 `task_type` 若已改造为 Deep Agent——如 `grade_homework`——按同名 agent 路由，仅接受完全匹配的已注册名，拼写错误仍 422）
 3. 确定性关键词规则（"总结/摘要/summarize" → summary workflow）
 4. LLM 按注册表能力描述结构化分类
 5. 歧义或无效选择 → 安全回退到默认 Deep Agent
@@ -70,11 +70,20 @@ uv run ruff check . --fix
 在所属目录的创建函数里登记（**而非**改图）：
 
 - 工作流：`workflows/__init__.py` 的 `create_workflows()`，提供 `WorkflowExecutor` + `ExecutorDefinition`。
-- Deep Agent：新建 `deep_agents/<name>/` 模块（prompt/subagents/技能声明，调 `harness.build_deep_agent`），再在 `deep_agents/catalog.py` 的 `create_agents()` 登记。
+- Deep Agent：新建 `deep_agents/<name>/` 模块（prompt/subagents/技能声明，调 `harness.build_deep_agent`），再在 `deep_agents/catalog.py` 的 `create_agents()` 登记。技能目录布局为 `skills/<agent-container>/<skill-name>/SKILL.md`（SDK 只扫描技能源容器的一级子目录，frontmatter `name` 必须与目录同名，`tests/unit/deep_agents/test_grade_agent.py::test_skill_layout_loadable` 强制校验）。
 
 注册后自动出现在路由候选中。Deep Agent 目录必须有且仅有一个 `is_default=True` 项（注册表构造时强制校验）。
 
-当前 Deep Agent：`solution_planning`（默认，结构化方案规划）、`info_price`（信息价查询/比价/趋势分析，analyst 子代理出图，图表经 `tools/chart_tools.py` 上传对象存储）。
+当前 Deep Agent：`solution_planning`（默认，结构化方案规划）、`info_price`（信息价查询/比价/趋势分析，analyst 子代理出图，图表经 `tools/chart_tools.py` 上传对象存储）、`grade_homework`（中小学作业批改，见下节）。
+
+### 作业批改 agent（`deep_agents/grade_homework/`，非显而易见）
+
+原 `grade_homework` 固定工作流已改造为 Deep Agent；路由名与 `result` 契约（`GradeResult`）保持不变，新增 `diagnosis`/`feedback`/`needs_human_review`/`review_reasons` 字段。分层不变量：
+
+- **感知/校验层必须是确定性代码**（`executor.py` + `postprocess.py` + `tools.py` 共用同一实现）：图片下载/SSRF 校验/压缩注入、统计重算（`fix_stats`）、数学复算（`verify_math`，复用 `calc.py` 的精确求值）、人审裁定（`apply_review_policy`）。agent 输出的数字**不直接决定对外结果**——`GradeHomeworkExecutor` 在返回前强制重跑全部后处理。
+- **图片走多模态消息而非工具**：`ExecutionContext.messages` 的最后一条用户消息被替换为 `[text, image_url...]` 内容块（OpenAI 工具消息不支持图片）。多轮追问无新图片时复用会话历史中的图片。
+- 主代理（视觉模型）判分；`error_analyst`/`feedback_writer` 两个**纯文本**子代理（`tools=[]`、`response_format` 结构化契约、共用 `/skills/grade-homework/` 技能容器——`SubAgent.skills` 经父级 `CompositeBackend` 解析，集成测试已验证）。主图 `task` 工具限流 3 次。
+- agent 最终回答须含符合契约的 JSON（编排技能约定），`finalize_answer` 从中提取**最后一个**可校验对象；提取不到即 `EXECUTION_FAILED`。
 
 ### Deep Agent 装配（`deep_agents/harness.py`，非显而易见）
 
@@ -90,7 +99,7 @@ uv run ruff check . --fix
 
 ### 配置与模型分配（`config.py`）
 
-`openai.model` 是路由器及所有未单独配置执行器的默认模型。每个执行器在所属创建函数里选自己的可选字段：当前有 `summary_model`、`solution_planning_model`、`info_price_model`，未设置时回退到 `openai.model`。新增执行器沿用此模式。
+`openai.model` 是路由器及所有未单独配置执行器的默认模型。每个执行器在所属创建函数里选自己的可选字段：当前有 `summary_model`、`solution_planning_model`、`info_price_model`、`grade_homework_model`（批改视觉模型，另有可选的 `grade_homework_base_url`/`grade_homework_api_key` 端点覆盖），未设置时回退到 `openai.model`。图片限制在 `grade_homework` 配置段（`max_image_mb`/`max_image_edge`/`max_pages`）。新增执行器沿用此模式。
 
 ### 会话与检查点
 

@@ -1,10 +1,10 @@
-"""grade_homework.calc 单元测试。"""
+"""批改作业计算结果模块(calc)单元测试。"""
 
 from fractions import Fraction
 
 import pytest
 
-from agent_app.workflows.grade_homework.calc import (
+from agent_app.deep_agents.grade_homework.calc import (
     CalcError,
     assert_public_http_url,
     calc_one,

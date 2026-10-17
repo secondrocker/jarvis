@@ -142,6 +142,30 @@ async def test_auto_named_targets_are_validated_and_route_without_llm() -> None:
     assert model.calls == []
 
 
+@pytest.mark.asyncio
+async def test_auto_task_type_matching_deep_agent_routes_to_agent() -> None:
+    """历史 task_type 已改造为 Deep Agent（如 grade_homework）时按同名 agent 路由。"""
+    model = _FakeRouterModel(None)
+    router = TaskRouter(registry=_registry(), model=model)
+
+    decision = await router.route(TaskRequest(message="x", task_type="research"))
+
+    assert decision.selected_mode is SelectedMode.DEEP_AGENT
+    assert decision.executor_type == "research"
+    assert model.calls == []
+
+    # 显式 workflow 模式不接受 Deep Agent 名称，报错仍然清晰。
+    with pytest.raises(AppError) as error:
+        await router.route(
+            TaskRequest(
+                message="x",
+                execution_mode=ExecutionMode.WORKFLOW,
+                task_type="research",
+            )
+        )
+    assert error.value.code is ErrorCode.INVALID_TASK_TYPE
+
+
 @pytest.mark.parametrize(
     ("task_request", "code"),
     [

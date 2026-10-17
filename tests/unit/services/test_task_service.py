@@ -161,6 +161,16 @@ def test_preflight_allows_auto_without_task_type() -> None:
     service.preflight(TaskRequest(message="x"))
 
 
+def test_preflight_allows_legacy_task_type_migrated_to_deep_agent() -> None:
+    """旧调用方的 task_type 已改造为 Deep Agent 时按同名 agent 放行。"""
+    service = TaskService(
+        graph=_FakeSuccessGraph(),
+        registry=_registry(),
+        task_timeout_seconds=5,
+    )
+    service.preflight(TaskRequest(message="x", task_type="research"))
+
+
 def test_preflight_allows_default_and_registered_deep_agents() -> None:
     service = TaskService(
         graph=_FakeSuccessGraph(),

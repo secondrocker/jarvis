@@ -54,8 +54,16 @@ class TaskRouter:
 
         if request.task_type and request.task_type.strip():
             executor_type = request.task_type.strip().lower()
+            if self._registry.contains(executor_type, mode=SelectedMode.WORKFLOW):
+                return RouteDecision.workflow(executor_type, "Registered task type matched")
+            if self._registry.contains(executor_type, mode=SelectedMode.DEEP_AGENT):
+                # 兼容：历史 task_type 已改造为 Deep Agent（如 grade_homework）。
+                # 仅接受完全匹配的已注册名，拼写错误仍按未注册处理。
+                return RouteDecision.deep_agent(
+                    executor_type,
+                    "Registered task type matched a deep agent",
+                )
             self._registry.get(executor_type, mode=SelectedMode.WORKFLOW)
-            return RouteDecision.workflow(executor_type, "Registered task type matched")
 
         if request.agent_type and request.agent_type.strip():
             executor_type = request.agent_type.strip().lower()

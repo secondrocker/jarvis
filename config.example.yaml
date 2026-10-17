@@ -61,10 +61,11 @@ image_vision:
   max_image_edge: 1280
   batch_limit: 20
 
-# 作业批改(小程序)
+# 作业批改(小程序)——现为 Deep Agent(grade_homework)
 grade_homework:
   max_image_mb: 8
   max_image_edge: 2048
+  max_pages: 4        # 单次提交允许的最大图片数(跨页作业)
 auth:
   access_password: homework-2024   # 留空/删除此段 = 开放访问
   secret: change-me-64-hex

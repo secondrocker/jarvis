@@ -220,7 +220,7 @@ agent-demo/
 ### 6.1 路由优先级
 
 1. 显式 `workflow` 或 `deep_agent` 覆盖自动判断。
-2. `task_type` 命中已注册固定任务时，选择对应 workflow。
+2. `task_type` 命中已注册固定任务时，选择对应 workflow；`task_type` 恰好是已注册 Deep Agent 名称（历史执行器已 agent 化，如 `grade_homework`）时按同名 agent 路由——仅接受完全匹配的注册名，拼写错误依旧 422。
 3. 对明确摘要意图执行确定性规则匹配。
 4. 仍无法判断时，调用轻量 LLM 返回结构化路由决策。
 5. LLM 结果无效，或 LLM 明确标记任务存在歧义时，回退到 `deep_agent`。
@@ -292,6 +292,37 @@ agent-demo/
 - 显式记录假设、风险和依赖。
 - 输出具有优先级、责任边界和验收条件的方案。
 - 信息不足时明确说明，而不是虚构事实。
+
+### 8.2 作业批改 Agent（grade_homework）
+
+原 `grade_homework` 固定工作流（fetch_image → grade_llm → calc_verify）已改造为 Deep Agent；
+路由名与 `result` 契约保持不变（`GradeResult`，新增 `diagnosis`/`feedback`/
+`needs_human_review`/`review_reasons` 为增量字段）。执行链分三层：
+
+1. **感知层（确定性代码）**：`GradeHomeworkExecutor` 从 `message`/`parameters.urls`
+   提取图片 URL（仅接受含 `://` 的片段），SSRF 校验 + 兜底压缩后把 JPEG data URL
+   作为 `image_url` 内容块注入当前用户消息（OpenAI 工具消息不支持图片）。
+   多轮追问无新图片时复用会话历史中的图片。
+2. **判断层（agent）**：主代理（视觉模型）按 `skills/grade-homework/` 容器下的
+   6 个技能逐题批改；数学算式经 `verify_expressions` 工具精确复算（禁止心算）；
+   提交前用 `check_grading_result` 校验契约；有错题时派发 `error_analyst`（错因
+   诊断与学情，`response_format=DiagnosisResult`）与 `feedback_writer`（学生评语，
+   `response_format=FeedbackReport`）两个**纯文本**子代理（`tools=[]`，共用同一
+   技能容器）；主图 `task` 工具限流 3 次。
+3. **校验层（确定性代码）**：`finalize_answer` 从 agent 最终回答提取最后一个可
+   通过契约校验的 JSON 对象，随后强制重跑统计重算（`fix_stats`）、数学复算
+   （`verify_math`，与旧工作流同一实现）与人审裁定（`apply_review_policy`）。
+   agent 输出的数字不直接决定对外结果；提取不到合法 JSON 即 `EXECUTION_FAILED`。
+
+人审裁定对齐政策要求（教育部《关于加强义务教育学校作业管理的通知》"全批全改、
+及时反馈、鼓励信息技术辅助诊断"；《教师生成式人工智能应用指引》"AI 不得将作文、
+艺术作品、开放性作业的自动批改结果作为学生最终评价直接使用"）：学科无法确认、
+题目不可读/低置信、开放性主观题（`answer_type=open`）、模型自标记 `needs_review`、
+未识别到题目、执行降级，任一命中即 `needs_human_review=true` 并附 `review_reasons`。
+
+技能目录布局遵循 Agent Skills 规范：`skills/<agent-container>/<skill-name>/SKILL.md`，
+frontmatter `name` 与目录同名、description 唯一且只写触发条件（不复述流程），
+由 `tests/unit/deep_agents/test_grade_agent.py::test_skill_layout_loadable` 强制校验。
 
 ## 9. API 契约
 
